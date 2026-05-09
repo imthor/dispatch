@@ -15,16 +15,31 @@ It installs an `agent` command that opens each task in its own tmux window, keep
 
 ## Requirements
 
-- macOS or another Unix-like system with zsh.
-- `tmux` installed and available on `PATH`.
+- macOS, Linux, BSD, or Windows through WSL.
+- `zsh` installed and available on `PATH`.
+- `tmux` installed and available on `PATH` to dispatch, attach, inspect, or kill agents.
 - `fzf` installed and available on `PATH` for the interactive agent switcher.
 - At least one configured agent command. The default config uses `codex`.
 
-On macOS, install tmux with Homebrew if needed:
+Install required tools with your OS package manager. Examples:
 
 ```zsh
+# macOS
 brew install tmux fzf
+
+# Debian/Ubuntu
+sudo apt install zsh tmux fzf
+
+# Fedora
+sudo dnf install zsh tmux fzf
+
+# Arch Linux
+sudo pacman -S zsh tmux fzf
 ```
+
+Desktop notifications are optional and macOS-only by default. Docker Sandbox
+mode is optional and requires a `docker` command that supports
+`docker sandbox`.
 
 ## Install
 
@@ -113,7 +128,9 @@ Dispatch from a different working directory:
 agent --cwd ~/projects/my-app "fix the failing tests"
 ```
 
-Run the selected agent through Docker Sandbox for one dispatch:
+Run the selected agent through Docker Sandbox for one dispatch. The prompt is
+passed to the agent inside the sandbox, and the agent starts in the requested
+working directory:
 
 ```zsh
 agent --docker --type codex --cwd ~/projects/my-app "fix the failing tests"
@@ -286,6 +303,9 @@ AGENT_CMDS=(
 
 typeset -A AGENT_DOCKER_CMDS
 AGENT_DOCKER_CMDS=(
+  # Keys enable Docker mode for these agent types. The dispatcher creates or
+  # reuses a Docker Sandbox, then runs the agent inside it with
+  # `docker sandbox exec`.
   codex "docker sandbox run codex"
   claude "docker sandbox run claude"
   gemini "docker sandbox run gemini"
@@ -314,6 +334,7 @@ AGENT_CMDS=(
 
 typeset -A AGENT_DOCKER_CMDS
 AGENT_DOCKER_CMDS=(
+  # Keys enable Docker mode for these agent types.
   codex "docker sandbox run codex"
   claude "docker sandbox run claude"
   gemini "docker sandbox run gemini"
@@ -337,12 +358,27 @@ agent --type opencode "fix the failing test"
 
 Docker Sandbox mode is opt-in. `agent --docker ...` creates or reuses a Docker
 Sandbox for the selected agent and working directory, then executes the agent
-inside that sandbox with the configured flags and task arguments, equivalent to:
+inside that sandbox with the configured flags and task arguments. Conceptually:
 
 ```zsh
 docker sandbox create claude ~/projects/my-app
-docker sandbox exec -it claude-my-app claude <agent-flags> <task...>
+docker sandbox exec -it --workdir ~/projects/my-app <sandbox-name> claude <agent-flags> <task...>
 ```
+
+For Codex, the dispatcher also copies host `~/.codex/auth.json` into the
+sandbox before launch so Docker mode uses the same Codex login as the host.
+
+If first-time Docker startup for an agent fails while pulling a sandbox template
+with a Docker/containerd `input/output error`, Docker Desktop storage is the
+problem rather than the dispatcher. Check free disk space and Docker cache:
+
+```zsh
+df -h ~
+docker system df
+docker builder prune -af
+```
+
+Restart Docker Desktop before retrying if prune also reports an I/O error.
 
 To default one agent type to Docker Sandbox, enable it in the config:
 

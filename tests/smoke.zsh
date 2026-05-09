@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env zsh
 
 set -euo pipefail
 
@@ -19,6 +19,8 @@ install_prefix="${tmpdir}/prefix with space"
 zsh -n "${install_prefix}/bin/agent"
 zsh -n "${install_prefix}/bin/_agent_runner"
 
+grep -Fq -- '#!/usr/bin/env zsh' "${install_prefix}/bin/agent"
+grep -Fq -- '#!/usr/bin/env zsh' "${install_prefix}/bin/_agent_runner"
 grep -Fq -- '--dangerously-bypass-approvals-and-sandbox' "${HOME}/.config/agent-dispatch/config"
 grep -Fq -- 'prefix\ with\ space/bin/agent switch-popup' "${HOME}/.config/agent-dispatch/tmux.conf"
 
@@ -144,6 +146,16 @@ case "$1" in
 esac
 TMUX
 chmod +x "${tmpdir}/bin/tmux"
+
+mkdir -p "${tmpdir}/path-no-tmux"
+ln -s "${commands[zsh]}" "${tmpdir}/path-no-tmux/zsh"
+
+PATH="${install_prefix}/bin:${tmpdir}/path-no-tmux" "${install_prefix}/bin/agent" switch \
+  > "${tmpdir}/agent-switch-no-tmux.out" 2>&1 && {
+    cat "${tmpdir}/agent-switch-no-tmux.out" >&2
+    exit 1
+  }
+grep -Fq -- "requires 'tmux' on PATH" "${tmpdir}/agent-switch-no-tmux.out"
 
 TMUX_LOG="${tmpdir}/tmux.log" AGENT_TEST_PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
   DOCKER_STATE="${tmpdir}/docker.state" PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \

@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env zsh
 
 set -euo pipefail
 
@@ -296,7 +296,7 @@ if [[ "${INSTALL_CODEX_UNSANDBOXED}" == "1" ]] && ! grep -Eq '^[[:space:]]*AGENT
 fi
 
 install_file "${BIN_DIR}/agent" 0755 <<'AGENT_CLI'
-#!/bin/zsh
+#!/usr/bin/env zsh
 
 set -euo pipefail
 setopt no_nomatch
@@ -350,6 +350,27 @@ usage:
 config:
   ~/.config/agent-dispatch/config
 USAGE
+}
+
+_install_hint() {
+  case "${1}" in
+    tmux)
+      print "Install tmux with your OS package manager, for example: brew install tmux, sudo apt install tmux, sudo dnf install tmux, or sudo pacman -S tmux." >&2
+      ;;
+    fzf)
+      print "Install fzf with your OS package manager, for example: brew install fzf, sudo apt install fzf, sudo dnf install fzf, or sudo pacman -S fzf." >&2
+      ;;
+  esac
+}
+
+_require_cmd() {
+  local cmd="${1}"
+  if command -v "${cmd}" >/dev/null 2>&1; then
+    return 0
+  fi
+  print "error: agent-dispatch requires '${cmd}' on PATH for this command." >&2
+  _install_hint "${cmd}"
+  return 127
 }
 
 _style_session() {
@@ -545,6 +566,7 @@ _cmd_dispatch() {
     print "error: Docker sandbox is not configured for agent type '${agent_type}'." >&2
     return 1
   fi
+  _require_cmd tmux || return $?
 
   [[ -n "${task_label}" ]] || task_label="$(_auto_label "${extra_args[@]}")"
   local win_name="${agent_type}:${task_label}"
@@ -652,10 +674,8 @@ _cmd_history() {
 }
 
 _cmd_switch() {
-  if ! command -v fzf >/dev/null 2>&1; then
-    print "error: agent switch requires fzf. Install with: brew install fzf" >&2
-    return 1
-  fi
+  _require_cmd tmux || return $?
+  _require_cmd fzf || return $?
 
   local -a rows
   rows=( ${(f)"$(_agent_window_rows)"} )
@@ -695,6 +715,9 @@ _cmd_switch_popup() {
 _cmd_logs() {
   local pattern="${1:-}"
   local win_idx run_key
+  local -a pager_cmd
+
+  _require_cmd tmux || return $?
 
   if [[ -n "${pattern}" ]]; then
     win_idx="$(_find_window "${pattern}")" || return 1
@@ -711,7 +734,15 @@ _cmd_logs() {
     fi
   fi
 
-  tmux capture-pane -t "${SESSION}:${win_idx}" -p -S - | ${PAGER:-less}
+  if [[ -n "${PAGER:-}" ]]; then
+    pager_cmd=( ${(z)PAGER} )
+  elif command -v less >/dev/null 2>&1; then
+    pager_cmd=( less )
+  else
+    pager_cmd=( cat )
+  fi
+
+  tmux capture-pane -t "${SESSION}:${win_idx}" -p -S - | "${pager_cmd[@]}"
 }
 
 _cmd_rerun() {
@@ -778,11 +809,13 @@ _cmd_rerun() {
 
 _cmd_focus() {
   local win_idx
+  _require_cmd tmux || return $?
   win_idx="$(_find_window "${1:-}")" || return 1
   tmux switch-client -t "${SESSION}:${win_idx}" 2>/dev/null || tmux attach-session -t "${SESSION}:${win_idx}"
 }
 
 _cmd_attach() {
+  _require_cmd tmux || return $?
   if ! tmux has-session -t "${SESSION}" 2>/dev/null; then
     if [[ -n "${TMUX:-}" ]]; then
       tmux display-message "No ${SESSION} session is running."
@@ -796,6 +829,7 @@ _cmd_attach() {
 
 _cmd_kill() {
   local win_idx
+  _require_cmd tmux || return $?
   win_idx="$(_find_window "${1:-}")" || return 1
   tmux kill-window -t "${SESSION}:${win_idx}"
 }
@@ -852,7 +886,7 @@ esac
 AGENT_CLI
 
 install_file "${BIN_DIR}/_agent_runner" 0755 <<'AGENT_RUNNER'
-#!/bin/zsh
+#!/usr/bin/env zsh
 
 set -euo pipefail
 setopt no_nomatch
@@ -1293,4 +1327,10 @@ if [[ "${UPDATE_TMUX_RC}" == "1" ]]; then
   print "${CONFIG_DIR}/tmux.conf is configured in ${TMUX_RC_FILE}."
 else
   print "${CONFIG_DIR}/tmux.conf was not added to ${TMUX_RC_FILE}."
+fi
+if ! command -v tmux >/dev/null 2>&1; then
+  print "warning: tmux is not on PATH. Install tmux before dispatching agents." >&2
+fi
+if ! command -v fzf >/dev/null 2>&1; then
+  print "notice: fzf is not on PATH. Install fzf to use 'agent switch'." >&2
 fi
