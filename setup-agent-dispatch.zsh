@@ -94,6 +94,16 @@ DEFAULT_AGENT="${DEFAULT_AGENT:-codex}"
 # Context files in ctx/ are intentionally never purged.
 STATUS_TTL_MINS="${STATUS_TTL_MINS:-5}"
 
+# Desktop notifications: auto, always, or off.
+# auto sends notifications on macOS only. Idle notifications fire when the
+# agent pane has stopped changing for AGENT_NOTIFY_IDLE_SECS while still open.
+AGENT_NOTIFY="${AGENT_NOTIFY:-auto}"
+AGENT_NOTIFY_CLICK="${AGENT_NOTIFY_CLICK:-focus}"
+AGENT_NOTIFY_TERMINAL_APP="${AGENT_NOTIFY_TERMINAL_APP:-Terminal}"
+AGENT_NOTIFY_IDLE_SECS="${AGENT_NOTIFY_IDLE_SECS:-30}"
+AGENT_NOTIFY_POLL_SECS="${AGENT_NOTIFY_POLL_SECS:-2}"
+AGENT_NOTIFY_ON_EXIT="${AGENT_NOTIFY_ON_EXIT:-0}"
+
 # Tmux styles applied to dispatcher-managed agent windows.
 # Set either value to an empty string to disable pane background styling.
 AGENT_TMUX_WINDOW_STYLE="${AGENT_TMUX_WINDOW_STYLE:-bg=colour235}"
@@ -145,6 +155,12 @@ CTX_DIR="${CACHE_DIR}/ctx"
 SESSION="${SESSION:-agent-dispatch}"
 DEFAULT_AGENT="${DEFAULT_AGENT:-codex}"
 STATUS_TTL_MINS="${STATUS_TTL_MINS:-5}"
+AGENT_NOTIFY="${AGENT_NOTIFY:-auto}"
+AGENT_NOTIFY_CLICK="${AGENT_NOTIFY_CLICK:-focus}"
+AGENT_NOTIFY_TERMINAL_APP="${AGENT_NOTIFY_TERMINAL_APP:-Terminal}"
+AGENT_NOTIFY_IDLE_SECS="${AGENT_NOTIFY_IDLE_SECS:-30}"
+AGENT_NOTIFY_POLL_SECS="${AGENT_NOTIFY_POLL_SECS:-2}"
+AGENT_NOTIFY_ON_EXIT="${AGENT_NOTIFY_ON_EXIT:-0}"
 AGENT_TMUX_WINDOW_STYLE="${AGENT_TMUX_WINDOW_STYLE:-bg=colour235}"
 AGENT_TMUX_ACTIVE_WINDOW_STYLE="${AGENT_TMUX_ACTIVE_WINDOW_STYLE:-bg=colour235}"
 AGENT_TMUX_STATUS_STYLE="${AGENT_TMUX_STATUS_STYLE:-bg=#2b211d,fg=#f4efe7}"
@@ -559,6 +575,12 @@ HOOK_DIR="${HOME}/.config/agent-dispatch/hooks"
 
 SESSION="${SESSION:-agent-dispatch}"
 STATUS_TTL_MINS="${STATUS_TTL_MINS:-5}"
+AGENT_NOTIFY="${AGENT_NOTIFY:-auto}"
+AGENT_NOTIFY_CLICK="${AGENT_NOTIFY_CLICK:-focus}"
+AGENT_NOTIFY_TERMINAL_APP="${AGENT_NOTIFY_TERMINAL_APP:-Terminal}"
+AGENT_NOTIFY_IDLE_SECS="${AGENT_NOTIFY_IDLE_SECS:-30}"
+AGENT_NOTIFY_POLL_SECS="${AGENT_NOTIFY_POLL_SECS:-2}"
+AGENT_NOTIFY_ON_EXIT="${AGENT_NOTIFY_ON_EXIT:-0}"
 typeset -A AGENT_CMDS
 AGENT_CMDS=( codex "codex" )
 typeset -A AGENT_FLAGS
@@ -620,6 +642,42 @@ _save_context() {
 
 _notify() {
   local title="${1}" body="${2}"
+  local pane="${TMUX_PANE:-}"
+  local target="" click_cmd="" activate_event="" do_script_event="" execute_cmd=""
+  case "${AGENT_NOTIFY:l}" in
+    0|false|no|off|none|never)
+      return 0
+      ;;
+    auto)
+      [[ "$(uname -s)" == "Darwin" ]] || return 0
+      ;;
+    1|true|yes|on|always)
+      ;;
+    *)
+      print "warning: Unknown AGENT_NOTIFY='${AGENT_NOTIFY}', skipping notification." >&2
+      return 0
+      ;;
+  esac
+
+  if [[ "${AGENT_NOTIFY_CLICK:l}" == (focus|tmux|attach) && -n "${pane}" ]]; then
+    target="$(tmux display-message -p -t "${pane}" '#{session_name}:#{window_id}' 2>/dev/null || true)"
+    if [[ -n "${target}" ]]; then
+      click_cmd="tmux attach-session -t ${(q)target}"
+      if command -v terminal-notifier >/dev/null 2>&1 && command -v osascript >/dev/null 2>&1; then
+        activate_event="tell application \"${AGENT_NOTIFY_TERMINAL_APP}\" to activate"
+        do_script_event="tell application \"${AGENT_NOTIFY_TERMINAL_APP}\" to do script \"${click_cmd}\""
+        execute_cmd="/usr/bin/osascript -e ${(q)activate_event} -e ${(q)do_script_event}"
+        terminal-notifier \
+          -title "${title}" \
+          -message "${body}" \
+          -group "agent-dispatch.${AGENT_RUN_KEY}" \
+          -execute "${execute_cmd}" \
+          >/dev/null 2>&1 || true
+        return 0
+      fi
+    fi
+  fi
+
   command -v osascript >/dev/null 2>&1 || return 0
   osascript - "${title}" "${body}" <<'OSASCRIPT' >/dev/null 2>&1 || true
 on run argv
@@ -640,6 +698,49 @@ _run_done_hook() {
   "${hook}" || true
 }
 
+_start_idle_notifier() {
+  local pane="${TMUX_PANE:-}"
+  local idle_secs="${AGENT_NOTIFY_IDLE_SECS:-0}"
+  local poll_secs="${AGENT_NOTIFY_POLL_SECS:-2}"
+  local parent_pid="${$}"
+
+  [[ -n "${pane}" ]] || return 0
+  [[ "${idle_secs}" == <-> ]] || return 0
+  (( idle_secs > 0 )) || return 0
+  [[ "${poll_secs}" == <-> ]] || poll_secs=2
+  (( poll_secs > 0 )) || poll_secs=2
+
+  (
+    local last_sig sig now last_change notified
+    last_sig=""
+    last_change="$(_epoch_seconds)"
+    notified=0
+
+    while kill -0 "${parent_pid}" 2>/dev/null; do
+      sig="$(tmux capture-pane -p -t "${pane}" -S -200 2>/dev/null | cksum 2>/dev/null || true)"
+      now="$(_epoch_seconds)"
+
+      if [[ -n "${sig}" && "${sig}" != "${last_sig}" ]]; then
+        last_sig="${sig}"
+        last_change="${now}"
+        notified=0
+      elif (( notified == 0 && now - last_change >= idle_secs )); then
+        _notify "Agent ready" "${AGENT_TYPE}:${TASK_LABEL} has been idle for ${idle_secs}s"
+        notified=1
+      fi
+
+      sleep "${poll_secs}"
+    done
+  ) >/dev/null 2>&1 &
+  IDLE_NOTIFIER_PID="${!}"
+}
+
+_stop_idle_notifier() {
+  [[ -n "${IDLE_NOTIFIER_PID:-}" ]] || return 0
+  kill "${IDLE_NOTIFIER_PID}" >/dev/null 2>&1 || true
+  wait "${IDLE_NOTIFIER_PID}" >/dev/null 2>&1 || true
+}
+
 _save_context
 _status_line "running" "" 0
 cd "${WORK_DIR}"
@@ -647,18 +748,26 @@ cd "${WORK_DIR}"
 cmd=( ${(z)AGENT_CMDS[${AGENT_TYPE}]} )
 agent_flags=( ${(z)AGENT_FLAGS[${AGENT_TYPE}]:-} )
 
+IDLE_NOTIFIER_PID=""
+_start_idle_notifier
+
 set +e
 "${cmd[@]}" "${agent_flags[@]}" "${EXTRA_ARGS[@]}"
 exit_code=$?
 set -e
+_stop_idle_notifier
 
 duration=$(( $(_epoch_seconds) - START_EPOCH ))
 if (( exit_code == 0 )); then
   _status_line "done" "${exit_code}" "${duration}"
-  _notify "Agent done" "${AGENT_TYPE}:${TASK_LABEL}"
+  case "${AGENT_NOTIFY_ON_EXIT:l}" in
+    1|true|yes|on|always) _notify "Agent done" "${AGENT_TYPE}:${TASK_LABEL}" ;;
+  esac
 else
   _status_line "failed:${exit_code}" "${exit_code}" "${duration}"
-  _notify "Agent failed" "${AGENT_TYPE}:${TASK_LABEL} exited ${exit_code}"
+  case "${AGENT_NOTIFY_ON_EXIT:l}" in
+    1|true|yes|on|always) _notify "Agent failed" "${AGENT_TYPE}:${TASK_LABEL} exited ${exit_code}" ;;
+  esac
 fi
 _run_done_hook "${exit_code}" "${duration}"
 exit "${exit_code}"

@@ -184,6 +184,12 @@ Default config:
 SESSION="${SESSION:-agent-dispatch}"
 DEFAULT_AGENT="${DEFAULT_AGENT:-codex}"
 STATUS_TTL_MINS="${STATUS_TTL_MINS:-5}"
+AGENT_NOTIFY="${AGENT_NOTIFY:-auto}"
+AGENT_NOTIFY_CLICK="${AGENT_NOTIFY_CLICK:-focus}"
+AGENT_NOTIFY_TERMINAL_APP="${AGENT_NOTIFY_TERMINAL_APP:-Terminal}"
+AGENT_NOTIFY_IDLE_SECS="${AGENT_NOTIFY_IDLE_SECS:-30}"
+AGENT_NOTIFY_POLL_SECS="${AGENT_NOTIFY_POLL_SECS:-2}"
+AGENT_NOTIFY_ON_EXIT="${AGENT_NOTIFY_ON_EXIT:-0}"
 
 AGENT_TMUX_WINDOW_STYLE="${AGENT_TMUX_WINDOW_STYLE:-bg=colour235}"
 AGENT_TMUX_ACTIVE_WINDOW_STYLE="${AGENT_TMUX_ACTIVE_WINDOW_STYLE:-bg=colour235}"
@@ -236,6 +242,58 @@ Then run:
 
 ```zsh
 agent --type claude "implement the requested change"
+```
+
+## Notifications
+
+By default, desktop notifications are enabled only on macOS:
+
+```zsh
+AGENT_NOTIFY="${AGENT_NOTIFY:-auto}"
+AGENT_NOTIFY_CLICK="${AGENT_NOTIFY_CLICK:-focus}"
+AGENT_NOTIFY_TERMINAL_APP="${AGENT_NOTIFY_TERMINAL_APP:-Terminal}"
+```
+
+Set `AGENT_NOTIFY="off"` to disable notifications, or `AGENT_NOTIFY="always"`
+to try sending notifications on any system that has `osascript` available.
+Linux installs do not require notification tooling and will silently skip
+notifications with the default `auto` setting.
+
+Clickable notifications require `terminal-notifier` on macOS:
+
+```zsh
+brew install terminal-notifier
+```
+
+When `terminal-notifier` is available and `AGENT_NOTIFY_CLICK="focus"`, clicking
+an agent notification opens Terminal attached to the corresponding
+`agent-dispatch` tmux window using tmux's stable window id. Without
+`terminal-notifier`, notifications fall back to macOS `osascript` notifications,
+which are display-only.
+
+The click action uses AppleScript's Terminal `do script` command by default:
+
+```zsh
+AGENT_NOTIFY_TERMINAL_APP="${AGENT_NOTIFY_TERMINAL_APP:-Terminal}"
+```
+
+Notifications are attention-based rather than process-exit-based. While an agent
+window is still open, `_agent_runner` watches the tmux pane and sends an `Agent
+ready` notification after the pane has stopped changing for
+`AGENT_NOTIFY_IDLE_SECS` seconds. This catches both completed interactive work
+and cases where the agent is waiting for your input.
+
+```zsh
+AGENT_NOTIFY_IDLE_SECS="${AGENT_NOTIFY_IDLE_SECS:-30}"
+AGENT_NOTIFY_POLL_SECS="${AGENT_NOTIFY_POLL_SECS:-2}"
+```
+
+Exit notifications are off by default because interactive agents often keep the
+process open until you quit the session. Enable them only if your configured
+agent command exits when work is complete:
+
+```zsh
+AGENT_NOTIFY_ON_EXIT=1
 ```
 
 ## Tmux Status Bar
