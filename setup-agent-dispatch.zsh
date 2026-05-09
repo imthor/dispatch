@@ -127,7 +127,7 @@ fi
 backup_file() {
   local target="${1}"
   if [[ -e "${target}" || -L "${target}" ]]; then
-    local backup="${target}.bak.$(date +%Y%m%d%H%M%S)"
+    local backup="${target}.bak.$(date +%Y%m%d%H%M%S).$$"
     cp -p "${target}" "${backup}"
     print "backed up ${target} -> ${backup}"
   fi
@@ -135,10 +135,12 @@ backup_file() {
 
 install_file() {
   local target="${1}" mode="${2}"
+  local tmp="${target}.tmp.$$"
   backup_file "${target}"
   umask 022
-  cat > "${target}"
-  chmod "${mode}" "${target}"
+  cat > "${tmp}"
+  chmod "${mode}" "${tmp}"
+  mv -f "${tmp}" "${target}"
   print "installed ${target}"
 }
 
@@ -148,6 +150,11 @@ ensure_shell_path() {
   if [[ "${UPDATE_SHELL_RC}" != "1" ]]; then
     print "skipped shell PATH update because UPDATE_SHELL_RC=${UPDATE_SHELL_RC}"
     return 0
+  fi
+
+  if [[ "${bin_dir}" == *'"'* || "${bin_dir}" == *$'\n'* ]]; then
+    print "error: INSTALL_PREFIX must not contain double-quotes or newlines." >&2
+    return 1
   fi
 
   if [[ -f "${rc_file}" ]] && grep -Fq "${bin_dir}" "${rc_file}"; then
@@ -190,7 +197,7 @@ ensure_tmux_source() {
 }
 
 mkdir -p "${BIN_DIR}" "${ZSH_FUNC_DIR}" "${CONFIG_DIR}" "${CACHE_DIR}/ctx" "${HOOK_DIR}"
-chmod 700 "${CACHE_DIR}" "${CACHE_DIR}/ctx"
+chmod 700 "${CACHE_DIR}" "${CACHE_DIR}/ctx" "${CONFIG_DIR}" "${HOOK_DIR}"
 
 install_file "${CONFIG_DIR}/config.example" 0644 <<'AGENT_CONFIG'
 # agent-dispatch configuration
@@ -389,9 +396,10 @@ _agent_window_rows() {
   local idx name last run_key ctx_file status_file status_line
   local agent_type task_label work_dir state
   local AGENT_TYPE TASK_LABEL WORK_DIR
+  local sep=$'\x1e'
 
-  tmux list-windows -t "${SESSION}" -F "#{window_index}|#{window_name}|#{window_last_activity}" 2>/dev/null \
-    | while IFS='|' read -r idx name last; do
+  tmux list-windows -t "${SESSION}" -F "#{window_index}${sep}#{window_name}${sep}#{window_last_activity}" 2>/dev/null \
+    | while IFS="${sep}" read -r idx name last; do
         run_key="$(_run_key_for_window "${idx}")"
         [[ -n "${run_key}" ]] || continue
 
@@ -851,6 +859,10 @@ if [[ -z "${AGENT_RUN_KEY:-}" ]]; then
   print "error: AGENT_RUN_KEY is not set." >&2
   exit 2
 fi
+if [[ ! "${AGENT_RUN_KEY}" =~ ^[[:alnum:]._-]+$ ]]; then
+  print "error: AGENT_RUN_KEY contains invalid characters." >&2
+  exit 2
+fi
 if [[ -z "${AGENT_CMDS[${AGENT_TYPE}]+_}" ]]; then
   print "error: Unknown agent type '${AGENT_TYPE}'." >&2
   exit 2
@@ -915,8 +927,10 @@ _notify() {
     if [[ -n "${target}" ]]; then
       click_cmd="tmux attach-session -t ${(q)target}"
       if command -v terminal-notifier >/dev/null 2>&1 && command -v osascript >/dev/null 2>&1; then
-        activate_event="tell application \"${AGENT_NOTIFY_TERMINAL_APP}\" to activate"
-        do_script_event="tell application \"${AGENT_NOTIFY_TERMINAL_APP}\" to do script \"${click_cmd}\""
+        local safe_app="${AGENT_NOTIFY_TERMINAL_APP//\"/}"
+        local safe_cmd="${click_cmd//\"/\\\"}"
+        activate_event="tell application \"${safe_app}\" to activate"
+        do_script_event="tell application \"${safe_app}\" to do script \"${safe_cmd}\""
         execute_cmd="/usr/bin/osascript -e ${(q)activate_event} -e ${(q)do_script_event}"
         terminal-notifier \
           -title "${title}" \
@@ -1072,7 +1086,7 @@ _agent_types() {
   if [[ -r "${config}" ]]; then
     (
       typeset -A AGENT_CMDS
-      source "${config}" >/dev/null 2>&1
+      source "${config}" >/dev/null 2>&1 || true
       print -l ${(k)AGENT_CMDS}
     )
   else
