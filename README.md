@@ -105,6 +105,12 @@ Open an interactive agent switcher:
 agent switch
 ```
 
+Jump directly to the whole dispatcher tmux session:
+
+```zsh
+agent attach
+```
+
 Show logs for the most recently active dispatched agent:
 
 ```zsh
@@ -136,6 +142,7 @@ Ctrl-b n    next window
 Ctrl-b p    previous window
 Ctrl-b w    window list
 Ctrl-b a    agent-dispatch switcher
+Ctrl-b A    jump to the agent-dispatch session
 Ctrl-b b    return to previous tmux session
 ```
 

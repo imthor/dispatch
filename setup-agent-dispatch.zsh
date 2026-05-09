@@ -182,6 +182,7 @@ usage:
   agent [--type <type>] [--label <label>] [--cwd <dir>] <task...>
   agent dispatch [--type <type>] [--label <label>] [--cwd <dir>] <task...>
   agent status
+  agent attach
   agent switch
   agent switch-popup
   agent logs [<pattern>]
@@ -513,6 +514,18 @@ _cmd_focus() {
   tmux switch-client -t "${SESSION}:${win_idx}" 2>/dev/null || tmux attach-session -t "${SESSION}:${win_idx}"
 }
 
+_cmd_attach() {
+  if ! tmux has-session -t "${SESSION}" 2>/dev/null; then
+    if [[ -n "${TMUX:-}" ]]; then
+      tmux display-message "No ${SESSION} session is running."
+    fi
+    print "error: No ${SESSION} session is running." >&2
+    return 1
+  fi
+
+  tmux switch-client -t "${SESSION}" 2>/dev/null || tmux attach-session -t "${SESSION}"
+}
+
 _cmd_kill() {
   local win_idx
   win_idx="$(_find_window "${1:-}")" || return 1
@@ -531,6 +544,10 @@ case "${cmd}" in
   status)
     shift
     _cmd_status "$@"
+    ;;
+  attach)
+    shift
+    _cmd_attach "$@"
     ;;
   switch)
     shift
@@ -780,6 +797,7 @@ install_file "${CONFIG_DIR}/tmux.conf" 0644 <<'TMUX_CONF'
 
 unbind-key -q A
 bind-key a display-popup -E -w 85% -h 70% "$HOME/.local/bin/agent switch-popup"
+bind-key A run-shell "$HOME/.local/bin/agent attach"
 bind-key b switch-client -l
 TMUX_CONF
 
@@ -828,6 +846,7 @@ _agent() {
   commands=(
     'dispatch:dispatch a new agent task'
     'status:show active and recent agent status'
+    'attach:focus the agent-dispatch tmux session'
     'switch:open an fzf picker for agent windows'
     'switch-popup:open the tmux popup switcher'
     'logs:show captured tmux pane logs'
