@@ -146,16 +146,18 @@ install_file() {
 
 ensure_shell_path() {
   local rc_file="${1}" bin_dir="${2}"
+  local quoted_bin_dir
 
   if [[ "${UPDATE_SHELL_RC}" != "1" ]]; then
     print "skipped shell PATH update because UPDATE_SHELL_RC=${UPDATE_SHELL_RC}"
     return 0
   fi
 
-  if [[ "${bin_dir}" == *'"'* || "${bin_dir}" == *$'\n'* ]]; then
-    print "error: INSTALL_PREFIX must not contain double-quotes or newlines." >&2
+  if [[ "${bin_dir}" == *$'\n'* ]]; then
+    print "error: INSTALL_PREFIX must not contain newlines." >&2
     return 1
   fi
+  quoted_bin_dir="${(qqqq)bin_dir}"
 
   if [[ -f "${rc_file}" ]] && grep -Fq "${bin_dir}" "${rc_file}"; then
     print "${bin_dir} is already referenced in ${rc_file}"
@@ -167,7 +169,7 @@ ensure_shell_path() {
   {
     print ""
     print "# agent-dispatch"
-    print "export PATH=\"${bin_dir}:\$PATH\""
+    print -r -- "export PATH=${quoted_bin_dir}:\$PATH"
   } >> "${rc_file}"
   print "added ${bin_dir} to PATH in ${rc_file}"
 }
@@ -907,6 +909,14 @@ _notify() {
   local title="${1}" body="${2}"
   local pane="${TMUX_PANE:-}"
   local target="" click_cmd="" activate_event="" do_script_event="" execute_cmd=""
+
+  _applescript_string() {
+    local value="${1}"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    print -r -- "\"${value}\""
+  }
+
   case "${AGENT_NOTIFY:l}" in
     0|false|no|off|none|never)
       return 0
@@ -927,10 +937,10 @@ _notify() {
     if [[ -n "${target}" ]]; then
       click_cmd="tmux attach-session -t ${(q)target}"
       if command -v terminal-notifier >/dev/null 2>&1 && command -v osascript >/dev/null 2>&1; then
-        local safe_app="${AGENT_NOTIFY_TERMINAL_APP//\"/}"
-        local safe_cmd="${click_cmd//\"/\\\"}"
-        activate_event="tell application \"${safe_app}\" to activate"
-        do_script_event="tell application \"${safe_app}\" to do script \"${safe_cmd}\""
+        local safe_app="$(_applescript_string "${AGENT_NOTIFY_TERMINAL_APP}")"
+        local safe_cmd="$(_applescript_string "${click_cmd}")"
+        activate_event="tell application ${safe_app} to activate"
+        do_script_event="tell application ${safe_app} to do script ${safe_cmd}"
         execute_cmd="/usr/bin/osascript -e ${(q)activate_event} -e ${(q)do_script_event}"
         terminal-notifier \
           -title "${title}" \
