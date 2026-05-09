@@ -94,6 +94,32 @@ DEFAULT_AGENT="${DEFAULT_AGENT:-codex}"
 # Context files in ctx/ are intentionally never purged.
 STATUS_TTL_MINS="${STATUS_TTL_MINS:-5}"
 
+# Tmux styles applied to dispatcher-managed agent windows.
+# Set either value to an empty string to disable pane background styling.
+AGENT_TMUX_WINDOW_STYLE="${AGENT_TMUX_WINDOW_STYLE:-bg=colour235}"
+AGENT_TMUX_ACTIVE_WINDOW_STYLE="${AGENT_TMUX_ACTIVE_WINDOW_STYLE:-bg=colour235}"
+AGENT_TMUX_STATUS_STYLE="${AGENT_TMUX_STATUS_STYLE:-bg=#2b211d,fg=#f4efe7}"
+AGENT_TMUX_STATUS_LEFT_STYLE="${AGENT_TMUX_STATUS_LEFT_STYLE:-bg=#d97757,fg=#fff7ed,bold}"
+AGENT_TMUX_STATUS_LEFT="${AGENT_TMUX_STATUS_LEFT:- AGENT #S }"
+AGENT_TMUX_BADGE_STYLE="${AGENT_TMUX_BADGE_STYLE:-bg=#d97757,fg=#fff7ed,bold}"
+
+# Optional per-agent tmux styles. Claude uses a warm accent inspired by the
+# Claude mark; add entries here for other agent types as needed.
+typeset -A AGENT_TMUX_WINDOW_STYLES
+AGENT_TMUX_WINDOW_STYLES=(
+  claude "bg=colour236"
+)
+
+typeset -A AGENT_TMUX_ACTIVE_WINDOW_STYLES
+AGENT_TMUX_ACTIVE_WINDOW_STYLES=(
+  claude "bg=colour236"
+)
+
+typeset -A AGENT_TMUX_BADGE_STYLES
+AGENT_TMUX_BADGE_STYLES=(
+  claude "bg=#d97757,fg=#fff7ed,bold"
+)
+
 typeset -A AGENT_CMDS
 AGENT_CMDS=(
   codex "codex"
@@ -119,6 +145,15 @@ CTX_DIR="${CACHE_DIR}/ctx"
 SESSION="${SESSION:-agent-dispatch}"
 DEFAULT_AGENT="${DEFAULT_AGENT:-codex}"
 STATUS_TTL_MINS="${STATUS_TTL_MINS:-5}"
+AGENT_TMUX_WINDOW_STYLE="${AGENT_TMUX_WINDOW_STYLE:-bg=colour235}"
+AGENT_TMUX_ACTIVE_WINDOW_STYLE="${AGENT_TMUX_ACTIVE_WINDOW_STYLE:-bg=colour235}"
+AGENT_TMUX_STATUS_STYLE="${AGENT_TMUX_STATUS_STYLE:-bg=#2b211d,fg=#f4efe7}"
+AGENT_TMUX_STATUS_LEFT_STYLE="${AGENT_TMUX_STATUS_LEFT_STYLE:-bg=#d97757,fg=#fff7ed,bold}"
+AGENT_TMUX_STATUS_LEFT="${AGENT_TMUX_STATUS_LEFT:- AGENT #S }"
+AGENT_TMUX_BADGE_STYLE="${AGENT_TMUX_BADGE_STYLE:-bg=#d97757,fg=#fff7ed,bold}"
+typeset -A AGENT_TMUX_WINDOW_STYLES
+typeset -A AGENT_TMUX_ACTIVE_WINDOW_STYLES
+typeset -A AGENT_TMUX_BADGE_STYLES
 typeset -A AGENT_CMDS
 AGENT_CMDS=( codex "codex" )
 typeset -A AGENT_FLAGS
@@ -143,10 +178,14 @@ config:
 USAGE
 }
 
-_ensure_session() {
-  if ! tmux has-session -t "${SESSION}" 2>/dev/null; then
-    tmux new-session -d -s "${SESSION}" -n dispatch
-  fi
+_style_session() {
+  tmux set-option -t "${SESSION}" status-interval 5
+  tmux set-option -t "${SESSION}" status-style "${AGENT_TMUX_STATUS_STYLE}"
+  tmux set-option -t "${SESSION}" status-left-style "${AGENT_TMUX_STATUS_LEFT_STYLE}"
+  tmux set-option -t "${SESSION}" status-left "${AGENT_TMUX_STATUS_LEFT}"
+  tmux set-option -t "${SESSION}" status-right '#(set -- "$HOME"/.cache/agent-dispatch/status.*; [ -e "$1" ] || exit 0; printf "%s\n" "$@" | xargs cat 2>/dev/null | head -n 3 | cut -c 1-80)'
+  tmux set-option -t "${SESSION}" @agent_badge_style "${AGENT_TMUX_BADGE_STYLE}"
+  tmux set-option -t "${SESSION}" window-status-current-format '#[#{@agent_badge_style}] AGENT #{window_index}:#{window_name} #[default]'
 }
 
 _cleanup_status() {
@@ -301,13 +340,23 @@ _cmd_dispatch() {
   [[ -n "${task_label}" ]] || task_label="$(_auto_label "${extra_args[@]}")"
   local win_name="${agent_type}:${task_label}"
 
-  _ensure_session
   mkdir -p "${CACHE_DIR}" "${CTX_DIR}"
 
-  local win_idx run_key runner
-  win_idx="$(tmux new-window -t "${SESSION}" -n "${win_name}" -c "${work_dir}" -P -F "#{window_index}")"
+  local win_idx run_key runner window_style active_window_style badge_style
+  if tmux has-session -t "${SESSION}" 2>/dev/null; then
+    win_idx="$(tmux new-window -t "${SESSION}" -n "${win_name}" -c "${work_dir}" -P -F "#{window_index}")"
+  else
+    win_idx="$(tmux new-session -d -s "${SESSION}" -n "${win_name}" -c "${work_dir}" -P -F "#{window_index}")"
+  fi
+  _style_session
   run_key="$(_epoch_seconds).${$}.${RANDOM}"
+  window_style="${AGENT_TMUX_WINDOW_STYLES[${agent_type}]:-${AGENT_TMUX_WINDOW_STYLE}}"
+  active_window_style="${AGENT_TMUX_ACTIVE_WINDOW_STYLES[${agent_type}]:-${AGENT_TMUX_ACTIVE_WINDOW_STYLE}}"
+  badge_style="${AGENT_TMUX_BADGE_STYLES[${agent_type}]:-${AGENT_TMUX_BADGE_STYLE}}"
   tmux set-option -w -t "${SESSION}:${win_idx}" @agent_run_key "${run_key}"
+  [[ -n "${badge_style}" ]] && tmux set-option -w -t "${SESSION}:${win_idx}" @agent_badge_style "${badge_style}"
+  [[ -n "${window_style}" ]] && tmux set-option -w -t "${SESSION}:${win_idx}" window-style "${window_style}"
+  [[ -n "${active_window_style}" ]] && tmux set-option -w -t "${SESSION}:${win_idx}" window-active-style "${active_window_style}"
 
   runner="AGENT_RUN_KEY=${(q)run_key} _agent_runner ${(q)agent_type} ${(q)task_label} ${(q)work_dir}"
   local a
@@ -620,8 +669,6 @@ install_file "${CONFIG_DIR}/tmux.conf" 0644 <<'TMUX_CONF'
 # Source this from ~/.tmux.conf with:
 #   source-file ~/.config/agent-dispatch/tmux.conf
 
-set -g status-interval 5
-set -g status-right '#(set -- "$HOME"/.cache/agent-dispatch/status.*; [ -e "$1" ] || exit 0; printf "%s\n" "$@" | xargs cat 2>/dev/null | head -n 3 | cut -c 1-80)'
 unbind-key -q A
 bind-key a display-popup -E -w 85% -h 70% "$HOME/.local/bin/agent switch-popup"
 bind-key b switch-client -l

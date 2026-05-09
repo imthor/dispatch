@@ -179,6 +179,28 @@ SESSION="${SESSION:-agent-dispatch}"
 DEFAULT_AGENT="${DEFAULT_AGENT:-codex}"
 STATUS_TTL_MINS="${STATUS_TTL_MINS:-5}"
 
+AGENT_TMUX_WINDOW_STYLE="${AGENT_TMUX_WINDOW_STYLE:-bg=colour235}"
+AGENT_TMUX_ACTIVE_WINDOW_STYLE="${AGENT_TMUX_ACTIVE_WINDOW_STYLE:-bg=colour235}"
+AGENT_TMUX_STATUS_STYLE="${AGENT_TMUX_STATUS_STYLE:-bg=#2b211d,fg=#f4efe7}"
+AGENT_TMUX_STATUS_LEFT_STYLE="${AGENT_TMUX_STATUS_LEFT_STYLE:-bg=#d97757,fg=#fff7ed,bold}"
+AGENT_TMUX_STATUS_LEFT="${AGENT_TMUX_STATUS_LEFT:- AGENT #S }"
+AGENT_TMUX_BADGE_STYLE="${AGENT_TMUX_BADGE_STYLE:-bg=#d97757,fg=#fff7ed,bold}"
+
+typeset -A AGENT_TMUX_WINDOW_STYLES
+AGENT_TMUX_WINDOW_STYLES=(
+  claude "bg=colour236"
+)
+
+typeset -A AGENT_TMUX_ACTIVE_WINDOW_STYLES
+AGENT_TMUX_ACTIVE_WINDOW_STYLES=(
+  claude "bg=colour236"
+)
+
+typeset -A AGENT_TMUX_BADGE_STYLES
+AGENT_TMUX_BADGE_STYLES=(
+  claude "bg=#d97757,fg=#fff7ed,bold"
+)
+
 typeset -A AGENT_CMDS
 AGENT_CMDS=(
   codex "codex"
@@ -229,6 +251,56 @@ Reload tmux config:
 ```zsh
 tmux source-file ~/.tmux.conf
 ```
+
+The dispatcher visually marks only the agent-dispatch tmux session. Its status
+bar uses a warm Claude-logo-inspired palette, its left status gets an `AGENT`
+badge, and agent status appears on the right. Newly dispatched agent windows also
+get a subtle pane background color by default so they are easy to tell apart from
+your normal tmux windows.
+
+When the agent-dispatch session does not exist yet, the first dispatched task is
+created as window 0. The dispatcher does not create a placeholder `dispatch`
+window.
+
+Customize the agent-dispatch session and window styling in:
+
+```zsh
+~/.config/agent-dispatch/config
+```
+
+```zsh
+AGENT_TMUX_WINDOW_STYLE="bg=colour235"
+AGENT_TMUX_ACTIVE_WINDOW_STYLE="bg=colour235"
+AGENT_TMUX_STATUS_STYLE="bg=#2b211d,fg=#f4efe7"
+AGENT_TMUX_STATUS_LEFT_STYLE="bg=#d97757,fg=#fff7ed,bold"
+AGENT_TMUX_STATUS_LEFT=" AGENT #S "
+AGENT_TMUX_BADGE_STYLE="bg=#d97757,fg=#fff7ed,bold"
+
+typeset -A AGENT_TMUX_WINDOW_STYLES
+AGENT_TMUX_WINDOW_STYLES=(
+  claude "bg=colour236"
+)
+
+typeset -A AGENT_TMUX_ACTIVE_WINDOW_STYLES
+AGENT_TMUX_ACTIVE_WINDOW_STYLES=(
+  claude "bg=colour236"
+)
+
+typeset -A AGENT_TMUX_BADGE_STYLES
+AGENT_TMUX_BADGE_STYLES=(
+  claude "bg=#d97757,fg=#fff7ed,bold"
+)
+
+# Disable pane background styling while keeping the AGENT status badge:
+AGENT_TMUX_WINDOW_STYLE=""
+AGENT_TMUX_ACTIVE_WINDOW_STYLE=""
+```
+
+`AGENT_TMUX_STATUS_STYLE`, `AGENT_TMUX_STATUS_LEFT_STYLE`, and
+`AGENT_TMUX_STATUS_LEFT` control the agent-dispatch session status bar.
+`AGENT_TMUX_WINDOW_STYLE` and `AGENT_TMUX_ACTIVE_WINDOW_STYLE` control the pane
+background for dispatched windows. The `AGENT_TMUX_*_STYLES` associative arrays
+let you override those defaults for a specific agent type.
 
 After sourcing the fragment, `Ctrl-b a` opens an `fzf` picker in a tmux popup. It lists active dispatcher-managed agent windows with status, type, label, and working directory. Press Enter to switch to the selected agent window, or Escape to close the popup. Use `Ctrl-b b` to return to the tmux session you came from.
 
