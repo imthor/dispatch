@@ -28,7 +28,13 @@ brew install tmux fzf
 
 ## Install
 
-Clone this repository, then run:
+Install directly with `curl`:
+
+```zsh
+curl -fsSL https://raw.githubusercontent.com/imthor/dispatch/main/setup-agent-dispatch.zsh | zsh
+```
+
+Or clone this repository, then run:
 
 ```zsh
 ./setup-agent-dispatch.zsh
