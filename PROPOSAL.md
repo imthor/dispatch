@@ -6,7 +6,7 @@
 
 **Architecture:** Logic lives in `agent` and `_agent_runner`. Status is ephemeral (TTL-based, default `STATUS_TTL_MINS=5`, configurable in `~/.config/agent-dispatch/config`). Task context (CWD, agent type, label, and original arguments) is preserved indefinitely in `~/.cache/agent-dispatch/ctx/` — a separate subdirectory excluded from TTL cleanup — to support the `rerun` command.
 
-**Identity contract:** Every dispatched agent gets one stable generated key, `run_key`, for example `run_key="${EPOCHSECONDS}.${$}.${RANDOM}"`. After creating the tmux window, the dispatcher stores it on that window with `tmux set-option -w -t "${SESSION}:${win_idx}" @agent_run_key "${run_key}"`. The tmux window index is only a live tmux target and may be reused after a window closes; it must not be used as persistent identity. The tmux window name remains human-readable and may contain punctuation, so it must not be used as a filesystem key either. Files use this convention:
+**Identity contract:** Every dispatched agent gets one stable generated key, `run_key`, for example `run_key="$(date +%s).${$}.${RANDOM}"`. After creating the tmux window, the dispatcher stores it on that window with `tmux set-option -w -t "${SESSION}:${win_idx}" @agent_run_key "${run_key}"`. The tmux window index is only a live tmux target and may be reused after a window closes; it must not be used as persistent identity. The tmux window name remains human-readable and may contain punctuation, so it must not be used as a filesystem key either. Files use this convention:
 
 | File | Purpose |
 |---|---|
@@ -60,7 +60,7 @@ Replace with:
   win_idx="$(tmux new-window -t "${SESSION}" -n "${win_name}" -c "${work_dir}" \
              -P -F "#{window_index}")"
 
-  local run_key="${EPOCHSECONDS}.${$}.${RANDOM}"
+  local run_key="$(date +%s).${$}.${RANDOM}"
   tmux set-option -w -t "${SESSION}:${win_idx}" @agent_run_key "${run_key}"
   local runner="AGENT_RUN_KEY=${(q)run_key} _agent_runner ${(q)agent_type} ${(q)task_label} ${(q)work_dir}"
   for a in "${extra_args[@]}"; do runner+=" ${(q)a}"; done
