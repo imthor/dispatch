@@ -45,13 +45,41 @@ The installer writes:
 ```text
 ~/.local/bin/agent
 ~/.local/bin/_agent_runner
+~/.config/agent-dispatch/config.example
 ~/.config/agent-dispatch/config
 ~/.config/agent-dispatch/tmux.conf
 ~/.config/agent-dispatch/hooks/on_done.example
 ~/.local/share/zsh/site-functions/_agent
 ```
 
-Existing files at those paths are backed up with a `.bak.<timestamp>` suffix before being replaced.
+Existing generated files at those paths are backed up with a `.bak.<timestamp>`
+suffix before being replaced. `~/.config/agent-dispatch/config` is created only
+if it does not already exist; future installs refresh `config.example` and keep
+your active config.
+
+The installer can prompt for optional defaults when run interactively. Every
+prompt also has a CLI flag for automation:
+
+```zsh
+./setup-agent-dispatch.zsh \
+  --install-prefix ~/.local \
+  --no-codex-unsandboxed \
+  --update-shell-rc \
+  --update-tmux-rc
+```
+
+Installer options:
+
+```text
+--install-prefix <dir>       Install binaries and completion under dir.
+--update-shell-rc            Add install bin dir to the shell rc file.
+--no-update-shell-rc         Do not edit the shell rc file.
+--update-tmux-rc             Source the tmux fragment from ~/.tmux.conf.
+--no-update-tmux-rc          Do not edit ~/.tmux.conf.
+--codex-unsandboxed          Default codex runs bypass approvals/sandbox.
+--no-codex-unsandboxed       Keep codex defaults sandboxed.
+-y, --yes                    Use defaults for unanswered prompts.
+```
 
 The installer also adds this to your zsh startup file if it is not already present:
 
@@ -91,12 +119,30 @@ Use a specific configured agent type:
 agent --type codex "review the latest changes"
 ```
 
+Pass an extra flag to the selected agent for one run:
+
+```zsh
+agent --agent-flag --dangerously-bypass-approvals-and-sandbox "fix the failing tests"
+```
+
+Skip configured `AGENT_FLAGS` for one run:
+
+```zsh
+agent --no-agent-flags "review this change without extra defaults"
+```
+
 ## Viewing Agents
 
 Show recent status:
 
 ```zsh
 agent status
+```
+
+Show saved rerun contexts:
+
+```zsh
+agent history
 ```
 
 Open an interactive agent switcher:
@@ -148,7 +194,7 @@ Ctrl-b b    return to previous tmux session
 
 ## Rerunning a Task
 
-Rerun a previous task by matching its tmux window name:
+Rerun a previous task by matching its tmux window name or saved context:
 
 ```zsh
 agent rerun repo-summary
@@ -159,9 +205,11 @@ Rerun uses the saved context from `~/.cache/agent-dispatch/ctx/`, including:
 - agent type
 - task label
 - original working directory
+- per-run agent flags
 - original task arguments
 
-Status files expire based on `STATUS_TTL_MINS`, but rerun context is preserved.
+Status files expire based on `STATUS_TTL_MINS`, but rerun context is preserved
+and visible through `agent history`.
 
 ## Stopping Agents
 
@@ -223,26 +271,32 @@ AGENT_TMUX_BADGE_STYLES=(
 typeset -A AGENT_CMDS
 AGENT_CMDS=(
   codex "codex"
+  claude "claude"
+  gemini "gemini"
+  opencode "opencode"
 )
 
 typeset -A AGENT_FLAGS
-AGENT_FLAGS[codex]="--dangerously-bypass-approvals-and-sandbox"
-# AGENT_FLAGS[codex]="--model gpt-5.3-codex --dangerously-bypass-approvals-and-sandbox"
+# AGENT_FLAGS[codex]="--model gpt-5.3-codex"
+# AGENT_FLAGS[codex]="--dangerously-bypass-approvals-and-sandbox"
 ```
 
-Add another agent type:
+Configure per-agent default flags:
 
 ```zsh
 typeset -A AGENT_CMDS
 AGENT_CMDS=(
   codex "codex"
   claude "claude"
+  gemini "gemini"
+  opencode "opencode"
 )
 
 typeset -A AGENT_FLAGS
 AGENT_FLAGS=(
-  codex "--model gpt-5.3-codex --dangerously-bypass-approvals-and-sandbox"
+  codex "--model gpt-5.3-codex"
   claude "--model claude-opus-4-7"
+  gemini "--model gemini-2.5-pro"
 )
 ```
 
@@ -250,6 +304,8 @@ Then run:
 
 ```zsh
 agent --type claude "implement the requested change"
+agent --type gemini "review the latest changes"
+agent --type opencode "fix the failing test"
 ```
 
 ## Notifications
@@ -391,6 +447,17 @@ fpath=(~/.local/share/zsh/site-functions $fpath)
 autoload -Uz compinit
 compinit
 ```
+
+## Development
+
+Run the smoke test:
+
+```zsh
+tests/smoke.zsh
+```
+
+The smoke test installs into a temporary home directory, checks generated script
+syntax, verifies install-prefix handling, and exercises runner flag persistence.
 
 ## Uninstall
 

@@ -2,9 +2,6 @@
 
 set -euo pipefail
 
-INSTALL_PREFIX="${INSTALL_PREFIX:-${HOME}/.local}"
-BIN_DIR="${INSTALL_PREFIX}/bin"
-ZSH_FUNC_DIR="${INSTALL_PREFIX}/share/zsh/site-functions"
 CONFIG_DIR="${HOME}/.config/agent-dispatch"
 CACHE_DIR="${HOME}/.cache/agent-dispatch"
 HOOK_DIR="${CONFIG_DIR}/hooks"
@@ -12,6 +9,120 @@ SHELL_RC_FILE="${SHELL_RC_FILE:-${ZDOTDIR:-${HOME}}/.zshrc}"
 UPDATE_SHELL_RC="${UPDATE_SHELL_RC:-1}"
 TMUX_RC_FILE="${TMUX_RC_FILE:-${HOME}/.tmux.conf}"
 UPDATE_TMUX_RC="${UPDATE_TMUX_RC:-1}"
+INSTALL_PREFIX="${INSTALL_PREFIX:-${HOME}/.local}"
+INSTALL_ASSUME_YES="${INSTALL_ASSUME_YES:-0}"
+INSTALL_INTERACTIVE="${INSTALL_INTERACTIVE:-auto}"
+INSTALL_CODEX_UNSANDBOXED="${INSTALL_CODEX_UNSANDBOXED:-}"
+
+_usage() {
+  cat <<'USAGE'
+usage:
+  setup-agent-dispatch.zsh [options]
+
+options:
+  --install-prefix <dir>       Install binaries and completion under dir.
+  --update-shell-rc            Add install bin dir to the shell rc file.
+  --no-update-shell-rc         Do not edit the shell rc file.
+  --update-tmux-rc             Source the tmux fragment from ~/.tmux.conf.
+  --no-update-tmux-rc          Do not edit ~/.tmux.conf.
+  --codex-unsandboxed          Default codex runs bypass approvals/sandbox.
+  --no-codex-unsandboxed       Keep codex defaults sandboxed.
+  -y, --yes                    Use defaults for unanswered prompts.
+  -h, --help                   Show this help.
+
+environment:
+  INSTALL_PREFIX, UPDATE_SHELL_RC, UPDATE_TMUX_RC, INSTALL_ASSUME_YES,
+  INSTALL_INTERACTIVE, INSTALL_CODEX_UNSANDBOXED
+USAGE
+}
+
+while (( $# )); do
+  case "${1}" in
+    --install-prefix)
+      (( $# >= 2 )) || { print "error: --install-prefix requires a value." >&2; exit 2; }
+      INSTALL_PREFIX="${2}"
+      shift 2
+      ;;
+    --update-shell-rc)
+      UPDATE_SHELL_RC=1
+      shift
+      ;;
+    --no-update-shell-rc)
+      UPDATE_SHELL_RC=0
+      shift
+      ;;
+    --update-tmux-rc)
+      UPDATE_TMUX_RC=1
+      shift
+      ;;
+    --no-update-tmux-rc)
+      UPDATE_TMUX_RC=0
+      shift
+      ;;
+    --codex-unsandboxed)
+      INSTALL_CODEX_UNSANDBOXED=1
+      shift
+      ;;
+    --no-codex-unsandboxed)
+      INSTALL_CODEX_UNSANDBOXED=0
+      shift
+      ;;
+    -y|--yes)
+      INSTALL_ASSUME_YES=1
+      shift
+      ;;
+    -h|--help)
+      _usage
+      exit 0
+      ;;
+    *)
+      print "error: Unknown option '${1}'." >&2
+      _usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+BIN_DIR="${INSTALL_PREFIX}/bin"
+ZSH_FUNC_DIR="${INSTALL_PREFIX}/share/zsh/site-functions"
+
+_is_interactive_install() {
+  [[ "${INSTALL_INTERACTIVE}" == "1" ]] && return 0
+  [[ "${INSTALL_INTERACTIVE}" == "0" ]] && return 1
+  [[ -r /dev/tty && -w /dev/tty && "${INSTALL_ASSUME_YES}" != "1" ]]
+}
+
+_prompt_yes_no() {
+  local prompt="${1}" default="${2}" answer
+  if ! _is_interactive_install; then
+    [[ "${default}" == "yes" ]]
+    return
+  fi
+
+  while true; do
+    if [[ "${default}" == "yes" ]]; then
+      print -n "${prompt} [Y/n] " > /dev/tty
+    else
+      print -n "${prompt} [y/N] " > /dev/tty
+    fi
+    read -r answer < /dev/tty
+    answer="${answer:l}"
+    [[ -z "${answer}" ]] && answer="${default}"
+    case "${answer}" in
+      y|yes) return 0 ;;
+      n|no) return 1 ;;
+      *) print "Please answer yes or no." > /dev/tty ;;
+    esac
+  done
+}
+
+if [[ -z "${INSTALL_CODEX_UNSANDBOXED}" ]]; then
+  if _prompt_yes_no "Default codex runs should bypass approvals and sandboxing?" "no"; then
+    INSTALL_CODEX_UNSANDBOXED=1
+  else
+    INSTALL_CODEX_UNSANDBOXED=0
+  fi
+fi
 
 backup_file() {
   local target="${1}"
@@ -81,7 +192,7 @@ ensure_tmux_source() {
 mkdir -p "${BIN_DIR}" "${ZSH_FUNC_DIR}" "${CONFIG_DIR}" "${CACHE_DIR}/ctx" "${HOOK_DIR}"
 chmod 700 "${CACHE_DIR}" "${CACHE_DIR}/ctx"
 
-install_file "${CONFIG_DIR}/config" 0644 <<'AGENT_CONFIG'
+install_file "${CONFIG_DIR}/config.example" 0644 <<'AGENT_CONFIG'
 # agent-dispatch configuration
 
 # Tmux session used for dispatched agents.
@@ -133,15 +244,33 @@ AGENT_TMUX_BADGE_STYLES=(
 typeset -A AGENT_CMDS
 AGENT_CMDS=(
   codex "codex"
+  claude "claude"
+  gemini "gemini"
+  opencode "opencode"
 )
 
 # Per-agent extra flags. Values are zsh (z)-split, so quoted strings are preserved.
 typeset -A AGENT_FLAGS
-AGENT_FLAGS[codex]="--dangerously-bypass-approvals-and-sandbox"
-# AGENT_FLAGS[codex]="--model gpt-5.3-codex --dangerously-bypass-approvals-and-sandbox"
 # AGENT_FLAGS[claude]="--model claude-opus-4-7"
+# AGENT_FLAGS[gemini]="--model gemini-2.5-pro"
 # AGENT_FLAGS[cursor]="--headless"
 AGENT_CONFIG
+
+if [[ ! -e "${CONFIG_DIR}/config" ]]; then
+  cp -p "${CONFIG_DIR}/config.example" "${CONFIG_DIR}/config"
+  print "installed ${CONFIG_DIR}/config"
+else
+  print "kept existing ${CONFIG_DIR}/config"
+fi
+
+if [[ "${INSTALL_CODEX_UNSANDBOXED}" == "1" ]] && ! grep -Eq '^[[:space:]]*AGENT_FLAGS\[codex\]=' "${CONFIG_DIR}/config"; then
+  {
+    print ""
+    print "# Enabled during install. This bypasses Codex approvals and sandboxing."
+    print 'AGENT_FLAGS[codex]="--dangerously-bypass-approvals-and-sandbox"'
+  } >> "${CONFIG_DIR}/config"
+  print "enabled unsandboxed Codex default in ${CONFIG_DIR}/config"
+fi
 
 install_file "${BIN_DIR}/agent" 0755 <<'AGENT_CLI'
 #!/bin/zsh
@@ -172,7 +301,7 @@ typeset -A AGENT_TMUX_WINDOW_STYLES
 typeset -A AGENT_TMUX_ACTIVE_WINDOW_STYLES
 typeset -A AGENT_TMUX_BADGE_STYLES
 typeset -A AGENT_CMDS
-AGENT_CMDS=( codex "codex" )
+AGENT_CMDS=( codex "codex" claude "claude" gemini "gemini" opencode "opencode" )
 typeset -A AGENT_FLAGS
 
 [[ -r "${CONFIG_FILE}" ]] && source "${CONFIG_FILE}"
@@ -180,9 +309,10 @@ typeset -A AGENT_FLAGS
 _usage() {
   cat <<'USAGE'
 usage:
-  agent [--type <type>] [--label <label>] [--cwd <dir>] <task...>
-  agent dispatch [--type <type>] [--label <label>] [--cwd <dir>] <task...>
+  agent [--type <type>] [--label <label>] [--cwd <dir>] [--agent-flag <flag>] [--no-agent-flags] <task...>
+  agent dispatch [--type <type>] [--label <label>] [--cwd <dir>] [--agent-flag <flag>] [--no-agent-flags] <task...>
   agent status
+  agent history
   agent attach
   agent switch
   agent switch-popup
@@ -306,7 +436,8 @@ _cmd_dispatch() {
   local agent_type="${DEFAULT_AGENT}"
   local task_label=""
   local work_dir="${PWD}"
-  local -a extra_args
+  local use_default_agent_flags=1
+  local -a extra_args runtime_agent_flags
 
   while (( $# )); do
     case "${1}" in
@@ -324,6 +455,15 @@ _cmd_dispatch() {
         (( $# >= 2 )) || { print "error: --cwd requires a value." >&2; return 2; }
         work_dir="${2}"
         shift 2
+        ;;
+      --agent-flag)
+        (( $# >= 2 )) || { print "error: --agent-flag requires a value." >&2; return 2; }
+        runtime_agent_flags+=( "${2}" )
+        shift 2
+        ;;
+      --no-agent-flags)
+        use_default_agent_flags=0
+        shift
         ;;
       --)
         shift
@@ -376,7 +516,10 @@ _cmd_dispatch() {
   [[ -n "${window_style}" ]] && tmux set-option -w -t "${SESSION}:${win_idx}" window-style "${window_style}"
   [[ -n "${active_window_style}" ]] && tmux set-option -w -t "${SESSION}:${win_idx}" window-active-style "${active_window_style}"
 
-  runner="AGENT_RUN_KEY=${(q)run_key} _agent_runner ${(q)agent_type} ${(q)task_label} ${(q)work_dir}"
+  runner="AGENT_RUN_KEY=${(q)run_key} _agent_runner ${(q)agent_type} ${(q)task_label} ${(q)work_dir} ${(q)use_default_agent_flags} ${(q)#runtime_agent_flags}"
+  for a in "${runtime_agent_flags[@]}"; do
+    runner+=" ${(q)a}"
+  done
   local a
   for a in "${extra_args[@]}"; do
     runner+=" ${(q)a}"
@@ -398,6 +541,59 @@ _cmd_status() {
   for file in "${files[@]}"; do
     cut -c 1-160 "${file}"
   done
+}
+
+_ctx_rows() {
+  local ctx_file run_key
+  local AGENT_TYPE TASK_LABEL WORK_DIR USE_DEFAULT_AGENT_FLAGS
+  local -a EXTRA_ARGS RUNTIME_AGENT_FLAGS
+
+  for ctx_file in "${CTX_DIR}"/*(Nom); do
+    [[ -r "${ctx_file}" ]] || continue
+    run_key="${ctx_file:t}"
+    AGENT_TYPE=""
+    TASK_LABEL=""
+    WORK_DIR=""
+    USE_DEFAULT_AGENT_FLAGS=1
+    EXTRA_ARGS=()
+    RUNTIME_AGENT_FLAGS=()
+    source "${ctx_file}" 2>/dev/null || continue
+    printf '%s\t%-8.8s\t%-33.33s\t%s\n' "${run_key}" "${AGENT_TYPE:-?}" "${TASK_LABEL:-?}" "${WORK_DIR:-?}"
+  done
+}
+
+_find_context() {
+  local pattern="${1:-}"
+  local -a matches
+
+  if [[ -z "${pattern}" ]]; then
+    print "error: Missing context pattern." >&2
+    return 2
+  fi
+
+  matches=( ${(f)"$(_ctx_rows | grep -iF -- "${pattern}" || true)"} )
+  if (( ${#matches} == 0 )); then
+    print "error: No saved context matching '${pattern}'." >&2
+    return 1
+  fi
+  if (( ${#matches} > 1 )); then
+    print "error: Ambiguous context pattern '${pattern}'. Matches:" >&2
+    print -l "  ${matches[@]}" >&2
+    return 1
+  fi
+  print -r -- "${CTX_DIR}/${matches[1]%%$'\t'*}"
+}
+
+_cmd_history() {
+  mkdir -p "${CTX_DIR}"
+  local -a rows
+  rows=( ${(f)"$(_ctx_rows)"} )
+  if (( ${#rows} == 0 )); then
+    print "No saved agent contexts."
+    return 0
+  fi
+  printf '%s\t%s\t%s\t%s\n' "RUN_KEY" "TYPE" "LABEL" "CWD"
+  print -l "${rows[@]}"
 }
 
 _cmd_switch() {
@@ -472,22 +668,26 @@ _cmd_rerun() {
     return 2
   fi
 
-  win_idx="$(_find_window "${pattern}")" || return 1
-  run_key="$(_run_key_for_window "${win_idx}")"
-  if [[ -z "${run_key}" ]]; then
-    print "error: Window '${pattern}' is not a dispatcher-managed agent window." >&2
-    return 1
+  if win_idx="$(_find_window "${pattern}" 2>/dev/null)"; then
+    run_key="$(_run_key_for_window "${win_idx}")"
+    if [[ -z "${run_key}" ]]; then
+      print "error: Window '${pattern}' is not a dispatcher-managed agent window." >&2
+      return 1
+    fi
+    ctx_file="${CTX_DIR}/${run_key}"
+  else
+    ctx_file="$(_find_context "${pattern}")" || return 1
   fi
-
-  ctx_file="${CTX_DIR}/${run_key}"
   if [[ ! -f "${ctx_file}" ]]; then
     print "error: No saved context for '${pattern}'. Cannot rerun." >&2
     return 1
   fi
 
-  local AGENT_TYPE TASK_LABEL WORK_DIR
-  local -a EXTRA_ARGS restored_args
-  local agent_type task_label saved_dir
+  local AGENT_TYPE TASK_LABEL WORK_DIR USE_DEFAULT_AGENT_FLAGS
+  local -a EXTRA_ARGS RUNTIME_AGENT_FLAGS restored_args restored_flags dispatch_args
+  local agent_type task_label saved_dir use_default_flags
+  USE_DEFAULT_AGENT_FLAGS=1
+  RUNTIME_AGENT_FLAGS=()
   source "${ctx_file}" || {
     print "error: Could not read context for '${pattern}'." >&2
     return 1
@@ -500,14 +700,22 @@ _cmd_rerun() {
   agent_type="${AGENT_TYPE}"
   task_label="${TASK_LABEL}"
   saved_dir="${WORK_DIR}"
+  use_default_flags="${USE_DEFAULT_AGENT_FLAGS:-1}"
   restored_args=( "${EXTRA_ARGS[@]}" )
+  restored_flags=( "${RUNTIME_AGENT_FLAGS[@]}" )
 
   if [[ ! -d "${saved_dir}" ]]; then
     print "error: Original work dir '${saved_dir}' no longer exists." >&2
     return 1
   fi
 
-  _cmd_dispatch --type "${agent_type}" --label "${task_label}" --cwd "${saved_dir}" "${restored_args[@]}"
+  dispatch_args=( --type "${agent_type}" --label "${task_label}" --cwd "${saved_dir}" )
+  [[ "${use_default_flags}" == "1" ]] || dispatch_args+=( --no-agent-flags )
+  local flag
+  for flag in "${restored_flags[@]}"; do
+    dispatch_args+=( --agent-flag "${flag}" )
+  done
+  _cmd_dispatch "${dispatch_args[@]}" "${restored_args[@]}"
 }
 
 _cmd_focus() {
@@ -546,6 +754,10 @@ case "${cmd}" in
   status)
     shift
     _cmd_status "$@"
+    ;;
+  history)
+    shift
+    _cmd_history "$@"
     ;;
   attach)
     shift
@@ -601,20 +813,38 @@ AGENT_NOTIFY_IDLE_SECS="${AGENT_NOTIFY_IDLE_SECS:-30}"
 AGENT_NOTIFY_POLL_SECS="${AGENT_NOTIFY_POLL_SECS:-2}"
 AGENT_NOTIFY_ON_EXIT="${AGENT_NOTIFY_ON_EXIT:-0}"
 typeset -A AGENT_CMDS
-AGENT_CMDS=( codex "codex" )
+AGENT_CMDS=( codex "codex" claude "claude" gemini "gemini" opencode "opencode" )
 typeset -A AGENT_FLAGS
 
 [[ -r "${CONFIG_FILE}" ]] && source "${CONFIG_FILE}"
 
-if (( $# < 3 )); then
-  print "usage: _agent_runner <agent_type> <task_label> <work_dir> [args...]" >&2
+if (( $# < 5 )); then
+  print "usage: _agent_runner <agent_type> <task_label> <work_dir> <use_default_flags> <runtime_flag_count> [runtime_flags...] [args...]" >&2
   exit 2
 fi
 
 AGENT_TYPE="${1}"
 TASK_LABEL="${2}"
 WORK_DIR="${3}"
-shift 3
+USE_DEFAULT_AGENT_FLAGS="${4}"
+RUNTIME_AGENT_FLAG_COUNT="${5}"
+shift 5
+
+if [[ "${RUNTIME_AGENT_FLAG_COUNT}" != <-> ]]; then
+  print "error: runtime flag count must be numeric." >&2
+  exit 2
+fi
+if (( $# < RUNTIME_AGENT_FLAG_COUNT )); then
+  print "error: runtime flag count exceeds provided arguments." >&2
+  exit 2
+fi
+
+RUNTIME_AGENT_FLAGS=()
+while (( RUNTIME_AGENT_FLAG_COUNT > 0 )); do
+  RUNTIME_AGENT_FLAGS+=( "${1}" )
+  shift
+  RUNTIME_AGENT_FLAG_COUNT=$(( RUNTIME_AGENT_FLAG_COUNT - 1 ))
+done
 EXTRA_ARGS=( "$@" )
 
 if [[ -z "${AGENT_RUN_KEY:-}" ]]; then
@@ -654,6 +884,8 @@ _save_context() {
     typeset -p AGENT_TYPE
     typeset -p TASK_LABEL
     typeset -p WORK_DIR
+    typeset -p USE_DEFAULT_AGENT_FLAGS
+    typeset -p RUNTIME_AGENT_FLAGS
     typeset -p EXTRA_ARGS
   } > "${CTX_FILE}"
   chmod 600 "${CTX_FILE}"
@@ -765,7 +997,11 @@ _status_line "running" "" 0
 cd "${WORK_DIR}"
 
 cmd=( ${(z)AGENT_CMDS[${AGENT_TYPE}]} )
-agent_flags=( ${(z)AGENT_FLAGS[${AGENT_TYPE}]:-} )
+agent_flags=()
+if [[ "${USE_DEFAULT_AGENT_FLAGS}" == "1" ]]; then
+  agent_flags=( ${(z)AGENT_FLAGS[${AGENT_TYPE}]:-} )
+fi
+agent_flags+=( "${RUNTIME_AGENT_FLAGS[@]}" )
 
 IDLE_NOTIFIER_PID=""
 _start_idle_notifier
@@ -792,14 +1028,15 @@ _run_done_hook "${exit_code}" "${duration}"
 exit "${exit_code}"
 AGENT_RUNNER
 
-install_file "${CONFIG_DIR}/tmux.conf" 0644 <<'TMUX_CONF'
+AGENT_BIN_QUOTED="${(q)BIN_DIR}/agent"
+install_file "${CONFIG_DIR}/tmux.conf" 0644 <<TMUX_CONF
 # agent-dispatch tmux status fragment.
 # Source this from ~/.tmux.conf with:
 #   source-file ~/.config/agent-dispatch/tmux.conf
 
 unbind-key -q A
-bind-key a display-popup -E -w 85% -h 70% "$HOME/.local/bin/agent switch-popup"
-bind-key A run-shell "$HOME/.local/bin/agent attach"
+bind-key a display-popup -E -w 85% -h 70% "${AGENT_BIN_QUOTED} switch-popup"
+bind-key A run-shell "${AGENT_BIN_QUOTED} attach"
 bind-key b switch-client -l
 TMUX_CONF
 
@@ -848,6 +1085,7 @@ _agent() {
   commands=(
     'dispatch:dispatch a new agent task'
     'status:show active and recent agent status'
+    'history:show saved rerun contexts'
     'attach:focus the agent-dispatch tmux session'
     'switch:open an fzf picker for agent windows'
     'switch-popup:open the tmux popup switcher'
@@ -874,6 +1112,17 @@ _agent() {
             '--type[agent type]:type:($(_agent_types))' \
             '--label[task label]:label:' \
             '--cwd[working directory]:directory:_directories' \
+            '--agent-flag[extra flag passed to the selected agent]:flag:' \
+            '--no-agent-flags[do not use configured AGENT_FLAGS for this run]' \
+            '*:task argument:_normal'
+          ;;
+        --type|-t|--label|-l|--cwd|-C|--agent-flag|--no-agent-flags)
+          _arguments \
+            '--type[agent type]:type:($(_agent_types))' \
+            '--label[task label]:label:' \
+            '--cwd[working directory]:directory:_directories' \
+            '--agent-flag[extra flag passed to the selected agent]:flag:' \
+            '--no-agent-flags[do not use configured AGENT_FLAGS for this run]' \
             '*:task argument:_normal'
           ;;
         logs|rerun|focus|kill)
@@ -892,7 +1141,15 @@ ensure_tmux_source "${TMUX_RC_FILE}" "${CONFIG_DIR}/tmux.conf"
 
 print ""
 print "agent-dispatch setup complete."
-print "${BIN_DIR} is configured in ${SHELL_RC_FILE}."
+if [[ "${UPDATE_SHELL_RC}" == "1" ]]; then
+  print "${BIN_DIR} is configured in ${SHELL_RC_FILE}."
+else
+  print "${BIN_DIR} was not added to ${SHELL_RC_FILE}."
+fi
 print "For zsh completion, add this before compinit if needed:"
 print "  fpath=(${ZSH_FUNC_DIR} \$fpath)"
-print "${CONFIG_DIR}/tmux.conf is configured in ${TMUX_RC_FILE}."
+if [[ "${UPDATE_TMUX_RC}" == "1" ]]; then
+  print "${CONFIG_DIR}/tmux.conf is configured in ${TMUX_RC_FILE}."
+else
+  print "${CONFIG_DIR}/tmux.conf was not added to ${TMUX_RC_FILE}."
+fi
