@@ -113,6 +113,14 @@ Dispatch from a different working directory:
 agent --cwd ~/projects/my-app "fix the failing tests"
 ```
 
+Run the selected agent through Docker Sandbox for one dispatch:
+
+```zsh
+agent --docker --type codex --cwd ~/projects/my-app "fix the failing tests"
+agent --docker --type claude --cwd ~/projects/my-app "implement the requested change"
+agent --docker --type gemini --cwd ~/projects/my-app "review the latest changes"
+```
+
 Use a specific configured agent type:
 
 ```zsh
@@ -276,6 +284,18 @@ AGENT_CMDS=(
   opencode "opencode"
 )
 
+typeset -A AGENT_DOCKER_CMDS
+AGENT_DOCKER_CMDS=(
+  codex "docker sandbox run codex"
+  claude "docker sandbox run claude"
+  gemini "docker sandbox run gemini"
+)
+
+typeset -A AGENT_DOCKER_DEFAULTS
+# AGENT_DOCKER_DEFAULTS[codex]=1
+# AGENT_DOCKER_DEFAULTS[claude]=1
+# AGENT_DOCKER_DEFAULTS[gemini]=1
+
 typeset -A AGENT_FLAGS
 # AGENT_FLAGS[codex]="--model gpt-5.3-codex"
 # AGENT_FLAGS[codex]="--dangerously-bypass-approvals-and-sandbox"
@@ -290,6 +310,13 @@ AGENT_CMDS=(
   claude "claude"
   gemini "gemini"
   opencode "opencode"
+)
+
+typeset -A AGENT_DOCKER_CMDS
+AGENT_DOCKER_CMDS=(
+  codex "docker sandbox run codex"
+  claude "docker sandbox run claude"
+  gemini "docker sandbox run gemini"
 )
 
 typeset -A AGENT_FLAGS
@@ -307,6 +334,23 @@ agent --type claude "implement the requested change"
 agent --type gemini "review the latest changes"
 agent --type opencode "fix the failing test"
 ```
+
+Docker Sandbox mode is opt-in. `agent --docker ...` creates or reuses a Docker
+Sandbox for the selected agent and working directory, then executes the agent
+inside that sandbox with the configured flags and task arguments, equivalent to:
+
+```zsh
+docker sandbox create claude ~/projects/my-app
+docker sandbox exec -it claude-my-app claude <agent-flags> <task...>
+```
+
+To default one agent type to Docker Sandbox, enable it in the config:
+
+```zsh
+AGENT_DOCKER_DEFAULTS[codex]=1
+```
+
+Use `--no-docker` on an individual dispatch to force the local command path.
 
 ## Notifications
 

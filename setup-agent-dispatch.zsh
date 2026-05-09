@@ -258,6 +258,20 @@ AGENT_CMDS=(
   opencode "opencode"
 )
 
+# Optional Docker Sandbox commands. Enable per run with `agent --docker ...`,
+# or per agent by setting AGENT_DOCKER_DEFAULTS[<type>]=1 below.
+typeset -A AGENT_DOCKER_CMDS
+AGENT_DOCKER_CMDS=(
+  codex "docker sandbox run codex"
+  claude "docker sandbox run claude"
+  gemini "docker sandbox run gemini"
+)
+
+typeset -A AGENT_DOCKER_DEFAULTS
+# AGENT_DOCKER_DEFAULTS[codex]=1
+# AGENT_DOCKER_DEFAULTS[claude]=1
+# AGENT_DOCKER_DEFAULTS[gemini]=1
+
 # Per-agent extra flags. Values are zsh (z)-split, so quoted strings are preserved.
 typeset -A AGENT_FLAGS
 # AGENT_FLAGS[claude]="--model claude-opus-4-7"
@@ -311,6 +325,9 @@ typeset -A AGENT_TMUX_ACTIVE_WINDOW_STYLES
 typeset -A AGENT_TMUX_BADGE_STYLES
 typeset -A AGENT_CMDS
 AGENT_CMDS=( codex "codex" claude "claude" gemini "gemini" opencode "opencode" )
+typeset -A AGENT_DOCKER_CMDS
+AGENT_DOCKER_CMDS=( codex "docker sandbox run codex" claude "docker sandbox run claude" gemini "docker sandbox run gemini" )
+typeset -A AGENT_DOCKER_DEFAULTS
 typeset -A AGENT_FLAGS
 
 [[ -r "${CONFIG_FILE}" ]] && source "${CONFIG_FILE}"
@@ -318,8 +335,8 @@ typeset -A AGENT_FLAGS
 _usage() {
   cat <<'USAGE'
 usage:
-  agent [--type <type>] [--label <label>] [--cwd <dir>] [--agent-flag <flag>] [--no-agent-flags] <task...>
-  agent dispatch [--type <type>] [--label <label>] [--cwd <dir>] [--agent-flag <flag>] [--no-agent-flags] <task...>
+  agent [--type <type>] [--label <label>] [--cwd <dir>] [--docker|--no-docker] [--agent-flag <flag>] [--no-agent-flags] <task...>
+  agent dispatch [--type <type>] [--label <label>] [--cwd <dir>] [--docker|--no-docker] [--agent-flag <flag>] [--no-agent-flags] <task...>
   agent status
   agent history
   agent attach
@@ -398,7 +415,7 @@ _agent_window_rows() {
   local idx name last run_key ctx_file status_file status_line
   local agent_type task_label work_dir state
   local AGENT_TYPE TASK_LABEL WORK_DIR
-  local sep=$'\x1e'
+  local sep='|'
 
   tmux list-windows -t "${SESSION}" -F "#{window_index}${sep}#{window_name}${sep}#{window_last_activity}" 2>/dev/null \
     | while IFS="${sep}" read -r idx name last; do
@@ -447,6 +464,7 @@ _cmd_dispatch() {
   local task_label=""
   local work_dir="${PWD}"
   local use_default_agent_flags=1
+  local use_docker=""
   local -a extra_args runtime_agent_flags
 
   while (( $# )); do
@@ -470,6 +488,14 @@ _cmd_dispatch() {
         (( $# >= 2 )) || { print "error: --agent-flag requires a value." >&2; return 2; }
         runtime_agent_flags+=( "${2}" )
         shift 2
+        ;;
+      --docker)
+        use_docker=1
+        shift
+        ;;
+      --no-docker)
+        use_docker=0
+        shift
         ;;
       --no-agent-flags)
         use_default_agent_flags=0
@@ -504,6 +530,21 @@ _cmd_dispatch() {
     print "Available types: ${(k)AGENT_CMDS}" >&2
     return 1
   fi
+  if [[ -z "${use_docker}" ]]; then
+    use_docker="${AGENT_DOCKER_DEFAULTS[${agent_type}]:-0}"
+  fi
+  case "${use_docker:l}" in
+    1|true|yes|on) use_docker=1 ;;
+    0|false|no|off|"") use_docker=0 ;;
+    *)
+      print "error: Invalid Docker setting '${use_docker}' for agent type '${agent_type}'." >&2
+      return 2
+      ;;
+  esac
+  if [[ "${use_docker}" == "1" && -z "${AGENT_DOCKER_CMDS[${agent_type}]+_}" ]]; then
+    print "error: Docker sandbox is not configured for agent type '${agent_type}'." >&2
+    return 1
+  fi
 
   [[ -n "${task_label}" ]] || task_label="$(_auto_label "${extra_args[@]}")"
   local win_name="${agent_type}:${task_label}"
@@ -526,7 +567,7 @@ _cmd_dispatch() {
   [[ -n "${window_style}" ]] && tmux set-option -w -t "${SESSION}:${win_idx}" window-style "${window_style}"
   [[ -n "${active_window_style}" ]] && tmux set-option -w -t "${SESSION}:${win_idx}" window-active-style "${active_window_style}"
 
-  runner="AGENT_RUN_KEY=${(q)run_key} _agent_runner ${(q)agent_type} ${(q)task_label} ${(q)work_dir} ${(q)use_default_agent_flags} ${(q)#runtime_agent_flags}"
+  runner="AGENT_RUN_KEY=${(q)run_key} _agent_runner ${(q)agent_type} ${(q)task_label} ${(q)work_dir} ${(q)use_default_agent_flags} ${(q)use_docker} ${(q)#runtime_agent_flags}"
   for a in "${runtime_agent_flags[@]}"; do
     runner+=" ${(q)a}"
   done
@@ -536,7 +577,11 @@ _cmd_dispatch() {
   done
 
   tmux send-keys -t "${SESSION}:${win_idx}" "${runner}" Enter
-  print "dispatched ${agent_type} '${task_label}' in ${SESSION}:${win_idx}"
+  if [[ "${use_docker}" == "1" ]]; then
+    print "dispatched ${agent_type} '${task_label}' in ${SESSION}:${win_idx} using Docker"
+  else
+    print "dispatched ${agent_type} '${task_label}' in ${SESSION}:${win_idx}"
+  fi
 }
 
 _cmd_status() {
@@ -693,10 +738,11 @@ _cmd_rerun() {
     return 1
   fi
 
-  local AGENT_TYPE TASK_LABEL WORK_DIR USE_DEFAULT_AGENT_FLAGS
+  local AGENT_TYPE TASK_LABEL WORK_DIR USE_DEFAULT_AGENT_FLAGS USE_DOCKER
   local -a EXTRA_ARGS RUNTIME_AGENT_FLAGS restored_args restored_flags dispatch_args
-  local agent_type task_label saved_dir use_default_flags
+  local agent_type task_label saved_dir use_default_flags use_docker
   USE_DEFAULT_AGENT_FLAGS=1
+  USE_DOCKER=0
   RUNTIME_AGENT_FLAGS=()
   source "${ctx_file}" || {
     print "error: Could not read context for '${pattern}'." >&2
@@ -711,6 +757,7 @@ _cmd_rerun() {
   task_label="${TASK_LABEL}"
   saved_dir="${WORK_DIR}"
   use_default_flags="${USE_DEFAULT_AGENT_FLAGS:-1}"
+  use_docker="${USE_DOCKER:-0}"
   restored_args=( "${EXTRA_ARGS[@]}" )
   restored_flags=( "${RUNTIME_AGENT_FLAGS[@]}" )
 
@@ -721,6 +768,7 @@ _cmd_rerun() {
 
   dispatch_args=( --type "${agent_type}" --label "${task_label}" --cwd "${saved_dir}" )
   [[ "${use_default_flags}" == "1" ]] || dispatch_args+=( --no-agent-flags )
+  [[ "${use_docker}" == "1" ]] && dispatch_args+=( --docker )
   local flag
   for flag in "${restored_flags[@]}"; do
     dispatch_args+=( --agent-flag "${flag}" )
@@ -824,12 +872,15 @@ AGENT_NOTIFY_POLL_SECS="${AGENT_NOTIFY_POLL_SECS:-2}"
 AGENT_NOTIFY_ON_EXIT="${AGENT_NOTIFY_ON_EXIT:-0}"
 typeset -A AGENT_CMDS
 AGENT_CMDS=( codex "codex" claude "claude" gemini "gemini" opencode "opencode" )
+typeset -A AGENT_DOCKER_CMDS
+AGENT_DOCKER_CMDS=( codex "docker sandbox run codex" claude "docker sandbox run claude" gemini "docker sandbox run gemini" )
+typeset -A AGENT_DOCKER_DEFAULTS
 typeset -A AGENT_FLAGS
 
 [[ -r "${CONFIG_FILE}" ]] && source "${CONFIG_FILE}"
 
-if (( $# < 5 )); then
-  print "usage: _agent_runner <agent_type> <task_label> <work_dir> <use_default_flags> <runtime_flag_count> [runtime_flags...] [args...]" >&2
+if (( $# < 6 )); then
+  print "usage: _agent_runner <agent_type> <task_label> <work_dir> <use_default_flags> <use_docker> <runtime_flag_count> [runtime_flags...] [args...]" >&2
   exit 2
 fi
 
@@ -837,8 +888,9 @@ AGENT_TYPE="${1}"
 TASK_LABEL="${2}"
 WORK_DIR="${3}"
 USE_DEFAULT_AGENT_FLAGS="${4}"
-RUNTIME_AGENT_FLAG_COUNT="${5}"
-shift 5
+USE_DOCKER="${5}"
+RUNTIME_AGENT_FLAG_COUNT="${6}"
+shift 6
 
 if [[ "${RUNTIME_AGENT_FLAG_COUNT}" != <-> ]]; then
   print "error: runtime flag count must be numeric." >&2
@@ -867,6 +919,18 @@ if [[ ! "${AGENT_RUN_KEY}" =~ ^[[:alnum:]._-]+$ ]]; then
 fi
 if [[ -z "${AGENT_CMDS[${AGENT_TYPE}]+_}" ]]; then
   print "error: Unknown agent type '${AGENT_TYPE}'." >&2
+  exit 2
+fi
+case "${USE_DOCKER:l}" in
+  1|true|yes|on) USE_DOCKER=1 ;;
+  0|false|no|off|"") USE_DOCKER=0 ;;
+  *)
+    print "error: Invalid Docker setting '${USE_DOCKER}'." >&2
+    exit 2
+    ;;
+esac
+if [[ "${USE_DOCKER}" == "1" && -z "${AGENT_DOCKER_CMDS[${AGENT_TYPE}]+_}" ]]; then
+  print "error: Docker sandbox is not configured for agent type '${AGENT_TYPE}'." >&2
   exit 2
 fi
 if [[ ! -d "${WORK_DIR}" ]]; then
@@ -899,6 +963,7 @@ _save_context() {
     typeset -p TASK_LABEL
     typeset -p WORK_DIR
     typeset -p USE_DEFAULT_AGENT_FLAGS
+    typeset -p USE_DOCKER
     typeset -p RUNTIME_AGENT_FLAGS
     typeset -p EXTRA_ARGS
   } > "${CTX_FILE}"
@@ -1016,11 +1081,44 @@ _stop_idle_notifier() {
   wait "${IDLE_NOTIFIER_PID}" >/dev/null 2>&1 || true
 }
 
+_docker_sandbox_create_or_find() {
+  local agent="${1}" workspace="${2}" output code
+  output="$(docker sandbox create "${agent}" "${workspace}" 2>&1)"
+  code=$?
+  if (( code == 0 )); then
+    print -r -- "${output}" >&2
+    if [[ "${output}" =~ in\ VM\ ([^[:space:]]+) ]]; then
+      print -r -- "${match[1]}"
+      return 0
+    fi
+    print "error: Could not read Docker sandbox name from create output." >&2
+    return 1
+  fi
+  if [[ "${output}" =~ sandbox\ with\ name\ ([^[:space:]]+)\ already\ exists ]]; then
+    print -r -- "${match[1]}"
+    return 0
+  fi
+  print -r -- "${output}" >&2
+  return "${code}"
+}
+
+_sync_codex_auth_to_sandbox() {
+  local sandbox="${1}" host_auth="${HOME}/.codex/auth.json"
+  [[ "${AGENT_TYPE}" == "codex" ]] || return 0
+  [[ -r "${host_auth}" ]] || return 0
+
+  docker sandbox exec -i "${sandbox}" sh -lc 'umask 077; mkdir -p "${HOME}/.codex"; cat > "${HOME}/.codex/auth.json"' < "${host_auth}" >/dev/null
+}
+
 _save_context
 _status_line "running" "" 0
 cd "${WORK_DIR}"
 
-cmd=( ${(z)AGENT_CMDS[${AGENT_TYPE}]} )
+if [[ "${USE_DOCKER}" == "1" ]]; then
+  cmd=( ${(z)AGENT_DOCKER_CMDS[${AGENT_TYPE}]} )
+else
+  cmd=( ${(z)AGENT_CMDS[${AGENT_TYPE}]} )
+fi
 agent_flags=()
 if [[ "${USE_DEFAULT_AGENT_FLAGS}" == "1" ]]; then
   agent_flags=( ${(z)AGENT_FLAGS[${AGENT_TYPE}]:-} )
@@ -1031,8 +1129,23 @@ IDLE_NOTIFIER_PID=""
 _start_idle_notifier
 
 set +e
-"${cmd[@]}" "${agent_flags[@]}" "${EXTRA_ARGS[@]}"
-exit_code=$?
+if [[ "${USE_DOCKER}" == "1" ]] && ! command -v docker >/dev/null 2>&1; then
+  print "error: Docker is not installed or not on PATH." >&2
+  exit_code=127
+elif [[ "${USE_DOCKER}" == "1" ]]; then
+  sandbox_name="$(_docker_sandbox_create_or_find "${AGENT_TYPE}" "${WORK_DIR}")"
+  create_code=$?
+  if (( create_code != 0 )); then
+    exit_code="${create_code}"
+  else
+    _sync_codex_auth_to_sandbox "${sandbox_name}"
+    docker sandbox exec -it --workdir "${WORK_DIR}" "${sandbox_name}" "${AGENT_TYPE}" "${agent_flags[@]}" "${EXTRA_ARGS[@]}"
+    exit_code=$?
+  fi
+else
+  "${cmd[@]}" "${agent_flags[@]}" "${EXTRA_ARGS[@]}"
+  exit_code=$?
+fi
 set -e
 _stop_idle_notifier
 
@@ -1136,15 +1249,19 @@ _agent() {
             '--type[agent type]:type:($(_agent_types))' \
             '--label[task label]:label:' \
             '--cwd[working directory]:directory:_directories' \
+            '--docker[run the selected agent through docker sandbox]' \
+            '--no-docker[run the selected agent locally]' \
             '--agent-flag[extra flag passed to the selected agent]:flag:' \
             '--no-agent-flags[do not use configured AGENT_FLAGS for this run]' \
             '*:task argument:_normal'
           ;;
-        --type|-t|--label|-l|--cwd|-C|--agent-flag|--no-agent-flags)
+        --type|-t|--label|-l|--cwd|-C|--docker|--no-docker|--agent-flag|--no-agent-flags)
           _arguments \
             '--type[agent type]:type:($(_agent_types))' \
             '--label[task label]:label:' \
             '--cwd[working directory]:directory:_directories' \
+            '--docker[run the selected agent through docker sandbox]' \
+            '--no-docker[run the selected agent locally]' \
             '--agent-flag[extra flag passed to the selected agent]:flag:' \
             '--no-agent-flags[do not use configured AGENT_FLAGS for this run]' \
             '*:task argument:_normal'
