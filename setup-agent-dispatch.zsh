@@ -10,6 +10,8 @@ CACHE_DIR="${HOME}/.cache/agent-dispatch"
 HOOK_DIR="${CONFIG_DIR}/hooks"
 SHELL_RC_FILE="${SHELL_RC_FILE:-${ZDOTDIR:-${HOME}}/.zshrc}"
 UPDATE_SHELL_RC="${UPDATE_SHELL_RC:-1}"
+TMUX_RC_FILE="${TMUX_RC_FILE:-${HOME}/.tmux.conf}"
+UPDATE_TMUX_RC="${UPDATE_TMUX_RC:-1}"
 
 backup_file() {
   local target="${1}"
@@ -50,6 +52,30 @@ ensure_shell_path() {
     print "export PATH=\"${bin_dir}:\$PATH\""
   } >> "${rc_file}"
   print "added ${bin_dir} to PATH in ${rc_file}"
+}
+
+ensure_tmux_source() {
+  local rc_file="${1}" fragment="${2}"
+  local source_line="source-file ${fragment}"
+
+  if [[ "${UPDATE_TMUX_RC}" != "1" ]]; then
+    print "skipped tmux source update because UPDATE_TMUX_RC=${UPDATE_TMUX_RC}"
+    return 0
+  fi
+
+  if [[ -f "${rc_file}" ]] && grep -Fxq "${source_line}" "${rc_file}"; then
+    print "${fragment} is already sourced in ${rc_file}"
+    return 0
+  fi
+
+  mkdir -p "${rc_file:h}"
+  backup_file "${rc_file}"
+  {
+    print ""
+    print "# agent-dispatch"
+    print "${source_line}"
+  } >> "${rc_file}"
+  print "added ${fragment} source to ${rc_file}"
 }
 
 mkdir -p "${BIN_DIR}" "${ZSH_FUNC_DIR}" "${CONFIG_DIR}" "${CACHE_DIR}/ctx" "${HOOK_DIR}"
@@ -105,6 +131,8 @@ usage:
   agent [--type <type>] [--label <label>] [--cwd <dir>] <task...>
   agent dispatch [--type <type>] [--label <label>] [--cwd <dir>] <task...>
   agent status
+  agent switch
+  agent switch-popup
   agent logs [<pattern>]
   agent rerun <pattern>
   agent focus <pattern>
@@ -144,7 +172,7 @@ _find_window() {
     return 2
   fi
 
-  matches=( ${(f)"$(tmux list-windows -t "${SESSION}" -F "#{window_index}\t#{window_name}" 2>/dev/null | grep -iF -- "${pattern}" || true)"} )
+  matches=( ${(f)"$(tmux list-windows -t "${SESSION}" -F "#{window_index}|#{window_name}" 2>/dev/null | grep -iF -- "${pattern}" || true)"} )
 
   if (( ${#matches} == 0 )); then
     print "error: No window matching '${pattern}'." >&2
@@ -155,12 +183,62 @@ _find_window() {
     print -l "  ${matches[@]}" >&2
     return 1
   fi
-  print -r -- "${matches[1]%%$'\t'*}"
+  print -r -- "${matches[1]%%|*}"
 }
 
 _run_key_for_window() {
   local win_idx="${1}"
   tmux show-option -wqv -t "${SESSION}:${win_idx}" @agent_run_key 2>/dev/null
+}
+
+_trim() {
+  local value="${1:-}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  print -r -- "${value}"
+}
+
+_agent_window_rows() {
+  local idx name last run_key ctx_file status_file status_line
+  local agent_type task_label work_dir state
+  local AGENT_TYPE TASK_LABEL WORK_DIR
+
+  tmux list-windows -t "${SESSION}" -F "#{window_index}|#{window_name}|#{window_last_activity}" 2>/dev/null \
+    | while IFS='|' read -r idx name last; do
+        run_key="$(_run_key_for_window "${idx}")"
+        [[ -n "${run_key}" ]] || continue
+
+        agent_type="${name%%:*}"
+        task_label="${name#*:}"
+        [[ "${task_label}" != "${name}" ]] || task_label="${name}"
+        work_dir=""
+        state="active"
+
+        ctx_file="${CTX_DIR}/${run_key}"
+        if [[ -r "${ctx_file}" ]]; then
+          AGENT_TYPE=""
+          TASK_LABEL=""
+          WORK_DIR=""
+          source "${ctx_file}" 2>/dev/null || true
+          [[ -n "${AGENT_TYPE}" ]] && agent_type="${AGENT_TYPE}"
+          [[ -n "${TASK_LABEL}" ]] && task_label="${TASK_LABEL}"
+          [[ -n "${WORK_DIR}" ]] && work_dir="${WORK_DIR}"
+        fi
+
+        status_file="${CACHE_DIR}/status.${run_key}"
+        if [[ -r "${status_file}" ]]; then
+          status_line="$(head -n 1 "${status_file}")"
+          state="$(_trim "${status_line[37,46]}")"
+          [[ -n "${state}" ]] || state="active"
+        fi
+
+        if [[ -z "${work_dir}" ]]; then
+          work_dir="$(tmux display-message -p -t "${SESSION}:${idx}" "#{pane_current_path}" 2>/dev/null || true)"
+        fi
+
+        printf '%s\t%-10.10s\t%-8.8s\t%-33.33s\t%s\n' \
+          "${idx}" "${state}" "${agent_type}" "${task_label}" "${work_dir}"
+      done
 }
 
 _epoch_seconds() {
@@ -253,6 +331,46 @@ _cmd_status() {
   for file in "${files[@]}"; do
     cut -c 1-160 "${file}"
   done
+}
+
+_cmd_switch() {
+  if ! command -v fzf >/dev/null 2>&1; then
+    print "error: agent switch requires fzf. Install with: brew install fzf" >&2
+    return 1
+  fi
+
+  local -a rows
+  rows=( ${(f)"$(_agent_window_rows)"} )
+  if (( ${#rows} == 0 )); then
+    print "error: No active agent windows." >&2
+    return 1
+  fi
+
+  local selected win_idx
+  selected="$(printf '%s\n' "${rows[@]}" \
+    | fzf --delimiter=$'\t' --with-nth=2.. \
+        --prompt='agent> ' \
+        --header=$'STATE      TYPE     LABEL                             CWD')" || return 0
+
+  win_idx="${selected%%$'\t'*}"
+  [[ -n "${win_idx}" ]] || return 0
+  tmux switch-client -t "${SESSION}:${win_idx}" 2>/dev/null || tmux attach-session -t "${SESSION}:${win_idx}"
+}
+
+_cmd_switch_popup() {
+  local code
+  set +e
+  _cmd_switch
+  code=$?
+  set -e
+
+  if (( code != 0 )); then
+    print ""
+    print "agent switch exited with status ${code}."
+    print "Press Enter to close."
+    read -r
+  fi
+  return "${code}"
 }
 
 _cmd_logs() {
@@ -348,6 +466,14 @@ case "${cmd}" in
   status)
     shift
     _cmd_status "$@"
+    ;;
+  switch)
+    shift
+    _cmd_switch "$@"
+    ;;
+  switch-popup)
+    shift
+    _cmd_switch_popup "$@"
     ;;
   logs)
     shift
@@ -496,6 +622,9 @@ install_file "${CONFIG_DIR}/tmux.conf" 0644 <<'TMUX_CONF'
 
 set -g status-interval 5
 set -g status-right '#(set -- "$HOME"/.cache/agent-dispatch/status.*; [ -e "$1" ] || exit 0; printf "%s\n" "$@" | xargs cat 2>/dev/null | head -n 3 | cut -c 1-80)'
+unbind-key -q A
+bind-key a display-popup -E -w 85% -h 70% "$HOME/.local/bin/agent switch-popup"
+bind-key b switch-client -l
 TMUX_CONF
 
 install_file "${HOOK_DIR}/on_done.example" 0755 <<'ON_DONE'
@@ -543,6 +672,8 @@ _agent() {
   commands=(
     'dispatch:dispatch a new agent task'
     'status:show active and recent agent status'
+    'switch:open an fzf picker for agent windows'
+    'switch-popup:open the tmux popup switcher'
     'logs:show captured tmux pane logs'
     'rerun:rerun a saved agent context'
     'focus:focus an agent window'
@@ -580,11 +711,11 @@ _agent "$@"
 ZSH_COMPLETION
 
 ensure_shell_path "${SHELL_RC_FILE}" "${BIN_DIR}"
+ensure_tmux_source "${TMUX_RC_FILE}" "${CONFIG_DIR}/tmux.conf"
 
 print ""
 print "agent-dispatch setup complete."
 print "${BIN_DIR} is configured in ${SHELL_RC_FILE}."
 print "For zsh completion, add this before compinit if needed:"
 print "  fpath=(${ZSH_FUNC_DIR} \$fpath)"
-print "To enable the tmux status fragment, add this to ~/.tmux.conf:"
-print "  source-file ${CONFIG_DIR}/tmux.conf"
+print "${CONFIG_DIR}/tmux.conf is configured in ${TMUX_RC_FILE}."

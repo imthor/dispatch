@@ -17,12 +17,13 @@ It installs an `agent` command that opens each task in its own tmux window, keep
 
 - macOS or another Unix-like system with zsh.
 - `tmux` installed and available on `PATH`.
+- `fzf` installed and available on `PATH` for the interactive agent switcher.
 - At least one configured agent command. The default config uses `codex`.
 
 On macOS, install tmux with Homebrew if needed:
 
 ```zsh
-brew install tmux
+brew install tmux fzf
 ```
 
 ## Install
@@ -92,6 +93,12 @@ Show recent status:
 agent status
 ```
 
+Open an interactive agent switcher:
+
+```zsh
+agent switch
+```
+
 Show logs for the most recently active dispatched agent:
 
 ```zsh
@@ -122,6 +129,8 @@ Useful tmux keys after attaching:
 Ctrl-b n    next window
 Ctrl-b p    previous window
 Ctrl-b w    window list
+Ctrl-b a    agent-dispatch switcher
+Ctrl-b b    return to previous tmux session
 ```
 
 ## Rerunning a Task
@@ -220,6 +229,8 @@ Reload tmux config:
 ```zsh
 tmux source-file ~/.tmux.conf
 ```
+
+After sourcing the fragment, `Ctrl-b a` opens an `fzf` picker in a tmux popup. It lists active dispatcher-managed agent windows with status, type, label, and working directory. Press Enter to switch to the selected agent window, or Escape to close the popup. Use `Ctrl-b b` to return to the tmux session you came from.
 
 ## Completion
 
