@@ -131,13 +131,19 @@ agent --cwd ~/projects/my-app "fix the failing tests"
 
 When the working directory is the main worktree of a Git repository,
 `agent-dispatch` creates or reuses a linked Git worktree by default and starts
-the agent there. The worktree name is derived from the task name, for example
-`my-app-auth-refactor`. Linked worktrees start from committed Git state; use
-`--no-worktree` when the agent needs to see uncommitted changes in the current
-checkout.
+the agent there. By default, worktrees are created inside the repo under
+`.agent-worktrees/<task-name>`. Linked worktrees start from committed Git state;
+use `--no-worktree` when the agent needs to see uncommitted changes in the
+current checkout.
 
 ```zsh
 agent --task-name auth-refactor "implement the auth refactor"
+```
+
+Use a custom worktree base directory for one dispatch:
+
+```zsh
+agent --worktree-dir ~/agent-worktrees --task-name auth-refactor "implement the auth refactor"
 ```
 
 Disable worktree creation for one dispatch:
@@ -290,6 +296,7 @@ AGENT_NOTIFY_POLL_SECS="${AGENT_NOTIFY_POLL_SECS:-2}"
 AGENT_NOTIFY_ON_EXIT="${AGENT_NOTIFY_ON_EXIT:-0}"
 
 AGENT_GIT_WORKTREE="${AGENT_GIT_WORKTREE:-1}"
+AGENT_GIT_WORKTREE_DIR="${AGENT_GIT_WORKTREE_DIR:-.agent-worktrees}"
 AGENT_GIT_WORKTREE_PARENT="${AGENT_GIT_WORKTREE_PARENT:-}"
 
 AGENT_TMUX_WINDOW_STYLE="${AGENT_TMUX_WINDOW_STYLE:-bg=colour235}"

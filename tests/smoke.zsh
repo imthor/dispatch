@@ -195,11 +195,12 @@ TMUX_LOG="${tmpdir}/tmux-worktree.log" AGENT_TEST_PATH="${tmpdir}/bin:${install_
   "${install_prefix}/bin/agent" --type test --cwd "${git_repo}" --task-name smoke-branch "git task" \
   > "${tmpdir}/agent-worktree.out"
 
-worktree_dir="${tmpdir}/git-repo-smoke-branch"
+worktree_dir="${git_repo}/.agent-worktrees/smoke-branch"
 grep -Fq -- "dispatched test 'smoke-branch'" "${tmpdir}/agent-worktree.out"
 test -e "${worktree_dir}/.git"
 grep -R -Fq -- "${worktree_dir}" "${HOME}/.cache/agent-dispatch/ctx"
 grep -R -Fq -- "TASK_LABEL=smoke-branch" "${HOME}/.cache/agent-dispatch/ctx"
+grep -Fq -- ".agent-worktrees/" "${git_repo}/.git/info/exclude"
 
 git -C "${git_repo}" worktree remove "${worktree_dir}"
 TMUX_LOG="${tmpdir}/tmux-worktree-recreate.log" AGENT_TEST_PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
@@ -216,7 +217,7 @@ TMUX_LOG="${tmpdir}/tmux-worktree-subdir.log" AGENT_TEST_PATH="${tmpdir}/bin:${i
   "${install_prefix}/bin/agent" --type test --cwd "${git_repo}/scratch" --task-name subdir-task "subdir git task" \
   > "${tmpdir}/agent-worktree-subdir.out"
 
-subdir_worktree="${tmpdir}/git-repo-subdir-task/scratch"
+subdir_worktree="${git_repo}/.agent-worktrees/subdir-task/scratch"
 test -d "${subdir_worktree}"
 grep -R -Fq -- "${subdir_worktree}" "${HOME}/.cache/agent-dispatch/ctx"
 
@@ -243,6 +244,15 @@ TMUX_LOG="${tmpdir}/tmux-worktree-shared-b.log" AGENT_TEST_PATH="${tmpdir}/bin:$
     exit 1
   }
 grep -Fq -- "belongs to a different repository" "${tmpdir}/agent-worktree-shared-b.out"
+
+custom_worktree_dir="${tmpdir}/custom-worktrees"
+TMUX_LOG="${tmpdir}/tmux-worktree-custom-dir.log" AGENT_TEST_PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  "${install_prefix}/bin/agent" --type test --cwd "${git_repo}" --worktree-dir "${custom_worktree_dir}" --task-name custom-dir-task "custom dir task" \
+  > "${tmpdir}/agent-worktree-custom-dir.out"
+
+test -e "${custom_worktree_dir}/git-repo-custom-dir-task/.git"
+grep -R -Fq -- "${custom_worktree_dir}/git-repo-custom-dir-task" "${HOME}/.cache/agent-dispatch/ctx"
 
 TMUX_LOG="${tmpdir}/tmux-no-worktree.log" AGENT_TEST_PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
   PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \

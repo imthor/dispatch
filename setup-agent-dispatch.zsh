@@ -228,7 +228,10 @@ AGENT_NOTIFY_ON_EXIT="${AGENT_NOTIFY_ON_EXIT:-0}"
 # worktree of a Git repo. Existing worktrees are used as-is. Set to 0 globally,
 # or pass `agent --no-worktree ...`, to run in the requested directory.
 AGENT_GIT_WORKTREE="${AGENT_GIT_WORKTREE:-1}"
+# Relative paths are resolved inside the repo. Absolute paths are used as a
+# shared prefix and include the repo name in each worktree directory.
 AGENT_GIT_WORKTREE_PARENT="${AGENT_GIT_WORKTREE_PARENT:-}"
+AGENT_GIT_WORKTREE_DIR="${AGENT_GIT_WORKTREE_DIR:-${AGENT_GIT_WORKTREE_PARENT:-.agent-worktrees}}"
 
 # Tmux styles applied to dispatcher-managed agent windows.
 # Set either value to an empty string to disable pane background styling.
@@ -322,6 +325,7 @@ AGENT_NOTIFY_POLL_SECS="${AGENT_NOTIFY_POLL_SECS:-2}"
 AGENT_NOTIFY_ON_EXIT="${AGENT_NOTIFY_ON_EXIT:-0}"
 AGENT_GIT_WORKTREE="${AGENT_GIT_WORKTREE:-1}"
 AGENT_GIT_WORKTREE_PARENT="${AGENT_GIT_WORKTREE_PARENT:-}"
+AGENT_GIT_WORKTREE_DIR="${AGENT_GIT_WORKTREE_DIR:-${AGENT_GIT_WORKTREE_PARENT:-.agent-worktrees}}"
 AGENT_TMUX_WINDOW_STYLE="${AGENT_TMUX_WINDOW_STYLE:-bg=colour235}"
 AGENT_TMUX_ACTIVE_WINDOW_STYLE="${AGENT_TMUX_ACTIVE_WINDOW_STYLE:-bg=colour235}"
 AGENT_TMUX_STATUS_STYLE="${AGENT_TMUX_STATUS_STYLE:-bg=#2b211d,fg=#f4efe7}"
@@ -343,8 +347,8 @@ typeset -A AGENT_FLAGS
 _usage() {
   cat <<'USAGE'
 usage:
-  agent [--type <type>] [--task-name <name>] [--label <label>] [--cwd <dir>] [--worktree|--no-worktree] [--docker|--no-docker] [--agent-flag <flag>] [--no-agent-flags] <task...>
-  agent dispatch [--type <type>] [--task-name <name>] [--label <label>] [--cwd <dir>] [--worktree|--no-worktree] [--docker|--no-docker] [--agent-flag <flag>] [--no-agent-flags] <task...>
+  agent [--type <type>] [--task-name <name>] [--label <label>] [--cwd <dir>] [--worktree|--no-worktree] [--worktree-dir <dir>] [--docker|--no-docker] [--agent-flag <flag>] [--no-agent-flags] <task...>
+  agent dispatch [--type <type>] [--task-name <name>] [--label <label>] [--cwd <dir>] [--worktree|--no-worktree] [--worktree-dir <dir>] [--docker|--no-docker] [--agent-flag <flag>] [--no-agent-flags] <task...>
   agent status
   agent history
   agent attach
@@ -423,11 +427,19 @@ _git_worktree_key() {
 }
 
 _git_worktree_path() {
-  local root="${1}" key="${2}"
-  if [[ -n "${AGENT_GIT_WORKTREE_PARENT}" ]]; then
+  local root="${1}" name="${2}" worktree_dir="${3}"
+  local safe_name="$(_sanitize_path_name "${name}")"
+  local key="$(_git_worktree_key "${name}" "${root}")"
+  if [[ -n "${worktree_dir}" ]]; then
+    if [[ "${worktree_dir}" == /* ]]; then
+      print -r -- "${worktree_dir:A}/${key}"
+    else
+      print -r -- "${root:A}/${worktree_dir}/${safe_name}"
+    fi
+  elif [[ -n "${AGENT_GIT_WORKTREE_PARENT}" ]]; then
     print -r -- "${AGENT_GIT_WORKTREE_PARENT:A}/${key}"
   else
-    print -r -- "${root:h}/${key}"
+    print -r -- "${root:A}/.agent-worktrees/${safe_name}"
   fi
 }
 
@@ -460,8 +472,20 @@ _git_worktree_final_dir() {
   print -r -- "${final_dir}"
 }
 
+_git_worktree_exclude_dir() {
+  local root="${1}" worktree_dir="${2}" exclude_file line
+  [[ -n "${worktree_dir}" ]] || worktree_dir=".agent-worktrees"
+  [[ "${worktree_dir}" != /* ]] || return 0
+  exclude_file="$(git -C "${root}" rev-parse --git-path info/exclude 2>/dev/null)" || return 0
+  [[ "${exclude_file}" == /* ]] || exclude_file="${root:A}/${exclude_file}"
+  mkdir -p "${exclude_file:h}" || return 0
+  line="${worktree_dir%/}/"
+  grep -Fxq -- "${line}" "${exclude_file}" 2>/dev/null && return 0
+  print -r -- "${line}" >> "${exclude_file}" 2>/dev/null || true
+}
+
 _resolve_git_worktree_dir() {
-  local requested_dir="${1}" worktree_name="${2}"
+  local requested_dir="${1}" worktree_name="${2}" worktree_dir="${3:-${AGENT_GIT_WORKTREE_DIR:-.agent-worktrees}}"
   local root git_dir common_dir rel_dir key target branch output code
 
   command -v git >/dev/null 2>&1 || { print -r -- "${requested_dir}"; return 0; }
@@ -488,7 +512,7 @@ _resolve_git_worktree_dir() {
     return 0
   fi
 
-  target="$(_git_worktree_path "${root}" "${key}")"
+  target="$(_git_worktree_path "${root}" "${worktree_name}" "${worktree_dir}")"
   if [[ -e "${target}" ]]; then
     if git -C "${target}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       if ! _git_worktree_same_repo "${target}" "${common_dir}"; then
@@ -504,6 +528,7 @@ _resolve_git_worktree_dir() {
 
   branch="${key}"
   mkdir -p "${target:h}"
+  _git_worktree_exclude_dir "${root}" "${worktree_dir}"
   if output="$(git -C "${root}" worktree add -b "${branch}" "${target}" 2>&1)"; then
     code=0
   else
@@ -615,6 +640,7 @@ _cmd_dispatch() {
   local use_default_agent_flags=1
   local use_docker=""
   local use_git_worktree=""
+  local git_worktree_dir="${AGENT_GIT_WORKTREE_DIR:-${AGENT_GIT_WORKTREE_PARENT:-.agent-worktrees}}"
   local -a extra_args runtime_agent_flags
 
   while (( $# )); do
@@ -641,6 +667,11 @@ _cmd_dispatch() {
       --no-worktree|--no-git-worktree)
         use_git_worktree=0
         shift
+        ;;
+      --worktree-dir|--worktree-prefix|--git-worktree-dir|--git-worktree-prefix)
+        (( $# >= 2 )) || { print "error: ${1} requires a value." >&2; return 2; }
+        git_worktree_dir="${2}"
+        shift 2
         ;;
       --agent-flag)
         (( $# >= 2 )) || { print "error: --agent-flag requires a value." >&2; return 2; }
@@ -720,7 +751,7 @@ _cmd_dispatch() {
       ;;
   esac
   if [[ "${use_git_worktree}" == "1" ]]; then
-    work_dir="$(_resolve_git_worktree_dir "${work_dir}" "${task_label}")" || return $?
+    work_dir="$(_resolve_git_worktree_dir "${work_dir}" "${task_label}" "${git_worktree_dir}")" || return $?
   fi
 
   mkdir -p "${CACHE_DIR}" "${CTX_DIR}"
@@ -1441,13 +1472,17 @@ _agent() {
             '--git-worktree[create or reuse a Git worktree for this dispatch]' \
             '--no-worktree[run in the requested directory without creating a Git worktree]' \
             '--no-git-worktree[run in the requested directory without creating a Git worktree]' \
+            '--worktree-dir[base directory for Git worktrees]:directory:_directories' \
+            '--worktree-prefix[base directory for Git worktrees]:directory:_directories' \
+            '--git-worktree-dir[base directory for Git worktrees]:directory:_directories' \
+            '--git-worktree-prefix[base directory for Git worktrees]:directory:_directories' \
             '--docker[run the selected agent through docker sandbox]' \
             '--no-docker[run the selected agent locally]' \
             '--agent-flag[extra flag passed to the selected agent]:flag:' \
             '--no-agent-flags[do not use configured AGENT_FLAGS for this run]' \
             '*:task argument:_normal'
           ;;
-        --type|-t|--task-name|--label|-l|--cwd|-C|--worktree|--git-worktree|--no-worktree|--no-git-worktree|--docker|--no-docker|--agent-flag|--no-agent-flags)
+        --type|-t|--task-name|--label|-l|--cwd|-C|--worktree|--git-worktree|--no-worktree|--no-git-worktree|--worktree-dir|--worktree-prefix|--git-worktree-dir|--git-worktree-prefix|--docker|--no-docker|--agent-flag|--no-agent-flags)
           _arguments \
             '--type[agent type]:type:($(_agent_types))' \
             '--task-name[task name used for windows, status, history, and worktrees]:name:' \
@@ -1457,6 +1492,10 @@ _agent() {
             '--git-worktree[create or reuse a Git worktree for this dispatch]' \
             '--no-worktree[run in the requested directory without creating a Git worktree]' \
             '--no-git-worktree[run in the requested directory without creating a Git worktree]' \
+            '--worktree-dir[base directory for Git worktrees]:directory:_directories' \
+            '--worktree-prefix[base directory for Git worktrees]:directory:_directories' \
+            '--git-worktree-dir[base directory for Git worktrees]:directory:_directories' \
+            '--git-worktree-prefix[base directory for Git worktrees]:directory:_directories' \
             '--docker[run the selected agent through docker sandbox]' \
             '--no-docker[run the selected agent locally]' \
             '--agent-flag[extra flag passed to the selected agent]:flag:' \
