@@ -226,7 +226,8 @@ AGENT_CMDS=(
 )
 
 typeset -A AGENT_FLAGS
-# AGENT_FLAGS[codex]="--model gpt-5.3-codex"
+AGENT_FLAGS[codex]="--dangerously-bypass-approvals-and-sandbox"
+# AGENT_FLAGS[codex]="--model gpt-5.3-codex --dangerously-bypass-approvals-and-sandbox"
 ```
 
 Add another agent type:
@@ -240,7 +241,7 @@ AGENT_CMDS=(
 
 typeset -A AGENT_FLAGS
 AGENT_FLAGS=(
-  codex "--model gpt-5.3-codex"
+  codex "--model gpt-5.3-codex --dangerously-bypass-approvals-and-sandbox"
   claude "--model claude-opus-4-7"
 )
 ```
@@ -373,7 +374,7 @@ AGENT_TMUX_ACTIVE_WINDOW_STYLE=""
 background for dispatched windows. The `AGENT_TMUX_*_STYLES` associative arrays
 let you override those defaults for a specific agent type.
 
-After sourcing the fragment, `Ctrl-b a` opens an `fzf` picker in a tmux popup. It lists active dispatcher-managed agent windows with status, type, label, and working directory. Press Enter to switch to the selected agent window, or Escape to close the popup. Use `Ctrl-b b` to return to the tmux session you came from.
+After sourcing the fragment, `Ctrl-b a` opens a top-aligned `fzf` picker in a tmux popup. It lists active dispatcher-managed agent windows with status, type, label, and working directory. Press Enter to switch to the selected agent window, or Escape to close the popup. Use `Ctrl-b b` to return to the tmux session you came from.
 
 ## Completion
 

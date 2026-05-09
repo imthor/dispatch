@@ -137,7 +137,8 @@ AGENT_CMDS=(
 
 # Per-agent extra flags. Values are zsh (z)-split, so quoted strings are preserved.
 typeset -A AGENT_FLAGS
-# AGENT_FLAGS[codex]="--model gpt-5.3-codex"
+AGENT_FLAGS[codex]="--dangerously-bypass-approvals-and-sandbox"
+# AGENT_FLAGS[codex]="--model gpt-5.3-codex --dangerously-bypass-approvals-and-sandbox"
 # AGENT_FLAGS[claude]="--model claude-opus-4-7"
 # AGENT_FLAGS[cursor]="--headless"
 AGENT_CONFIG
@@ -415,6 +416,7 @@ _cmd_switch() {
   local selected win_idx
   selected="$(printf '%s\n' "${rows[@]}" \
     | fzf --delimiter=$'\t' --with-nth=2.. \
+        --layout=reverse \
         --prompt='agent> ' \
         --header=$'STATE      TYPE     LABEL                             CWD')" || return 0
 
