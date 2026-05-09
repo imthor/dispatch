@@ -27,6 +27,7 @@ grep -Fq -- 'prefix\ with\ space/bin/agent switch-popup' "${HOME}/.config/agent-
 cat > "${HOME}/.config/agent-dispatch/config" <<'AGENT_CONFIG'
 SESSION="agent-dispatch"
 AGENT_NOTIFY_IDLE_SECS=0
+AGENT_GIT_WORKTREE=0
 typeset -A AGENT_CMDS
 AGENT_CMDS=( test "/bin/echo" codex "/bin/echo" )
 typeset -A AGENT_DOCKER_CMDS
@@ -46,6 +47,7 @@ grep -Fq -- 'USE_DOCKER=0' "${HOME}/.cache/agent-dispatch/ctx/smoke.run"
 cat > "${HOME}/.config/agent-dispatch/config" <<'AGENT_CONFIG_OLD_DEFAULT'
 SESSION="agent-dispatch"
 AGENT_NOTIFY_IDLE_SECS=0
+AGENT_GIT_WORKTREE=0
 typeset -A AGENT_CMDS
 AGENT_CMDS=( test "/bin/echo" codex "/bin/echo" )
 AGENT_DOCKER_DEFAULTS[test]=1
@@ -60,6 +62,7 @@ grep -Fq -- 'compat-task' "${tmpdir}/runner-old-default.out"
 cat > "${HOME}/.config/agent-dispatch/config" <<'AGENT_CONFIG'
 SESSION="agent-dispatch"
 AGENT_NOTIFY_IDLE_SECS=0
+AGENT_GIT_WORKTREE=0
 typeset -A AGENT_CMDS
 AGENT_CMDS=( test "/bin/echo" codex "/bin/echo" )
 typeset -A AGENT_DOCKER_CMDS
@@ -169,6 +172,84 @@ grep -Fq -- "<${repo_dir}>" "${tmpdir}/agent-docker.out"
 grep -Fq -- "<test>" "${tmpdir}/agent-docker.out"
 grep -Fq -- "<--runtime-cli>" "${tmpdir}/agent-docker.out"
 grep -Fq -- "<cli task with spaces>" "${tmpdir}/agent-docker.out"
+
+git_repo="${tmpdir}/git-repo"
+mkdir -p "${git_repo}"
+git -C "${git_repo}" init >/dev/null
+git -C "${git_repo}" config user.email smoke@example.invalid
+git -C "${git_repo}" config user.name "Smoke Test"
+printf 'hello\n' > "${git_repo}/README.md"
+git -C "${git_repo}" add README.md
+git -C "${git_repo}" commit -m initial >/dev/null
+
+cat > "${HOME}/.config/agent-dispatch/config" <<'AGENT_CONFIG'
+SESSION="agent-dispatch"
+AGENT_NOTIFY_IDLE_SECS=0
+AGENT_GIT_WORKTREE=1
+typeset -A AGENT_CMDS
+AGENT_CMDS=( test "/bin/echo" codex "/bin/echo" )
+AGENT_CONFIG
+
+TMUX_LOG="${tmpdir}/tmux-worktree.log" AGENT_TEST_PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  "${install_prefix}/bin/agent" --type test --cwd "${git_repo}" --task-name smoke-branch "git task" \
+  > "${tmpdir}/agent-worktree.out"
+
+worktree_dir="${tmpdir}/git-repo-smoke-branch"
+grep -Fq -- "dispatched test 'smoke-branch'" "${tmpdir}/agent-worktree.out"
+test -e "${worktree_dir}/.git"
+grep -R -Fq -- "${worktree_dir}" "${HOME}/.cache/agent-dispatch/ctx"
+grep -R -Fq -- "TASK_LABEL=smoke-branch" "${HOME}/.cache/agent-dispatch/ctx"
+
+git -C "${git_repo}" worktree remove "${worktree_dir}"
+TMUX_LOG="${tmpdir}/tmux-worktree-recreate.log" AGENT_TEST_PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  "${install_prefix}/bin/agent" --type test --cwd "${git_repo}" --task-name smoke-branch "git task again" \
+  > "${tmpdir}/agent-worktree-recreate.out"
+
+grep -Fq -- "dispatched test 'smoke-branch'" "${tmpdir}/agent-worktree-recreate.out"
+test -e "${worktree_dir}/.git"
+
+mkdir -p "${git_repo}/scratch"
+TMUX_LOG="${tmpdir}/tmux-worktree-subdir.log" AGENT_TEST_PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  "${install_prefix}/bin/agent" --type test --cwd "${git_repo}/scratch" --task-name subdir-task "subdir git task" \
+  > "${tmpdir}/agent-worktree-subdir.out"
+
+subdir_worktree="${tmpdir}/git-repo-subdir-task/scratch"
+test -d "${subdir_worktree}"
+grep -R -Fq -- "${subdir_worktree}" "${HOME}/.cache/agent-dispatch/ctx"
+
+other_repo="${tmpdir}/other/git-repo"
+mkdir -p "${other_repo}"
+git -C "${other_repo}" init >/dev/null
+git -C "${other_repo}" config user.email smoke@example.invalid
+git -C "${other_repo}" config user.name "Smoke Test"
+printf 'other\n' > "${other_repo}/README.md"
+git -C "${other_repo}" add README.md
+git -C "${other_repo}" commit -m initial >/dev/null
+
+shared_worktrees="${tmpdir}/shared-worktrees"
+TMUX_LOG="${tmpdir}/tmux-worktree-shared-a.log" AGENT_TEST_PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  AGENT_GIT_WORKTREE_PARENT="${shared_worktrees}" PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  "${install_prefix}/bin/agent" --type test --cwd "${git_repo}" --task-name shared-task "shared task" \
+  > "${tmpdir}/agent-worktree-shared-a.out"
+
+TMUX_LOG="${tmpdir}/tmux-worktree-shared-b.log" AGENT_TEST_PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  AGENT_GIT_WORKTREE_PARENT="${shared_worktrees}" PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  "${install_prefix}/bin/agent" --type test --cwd "${other_repo}" --task-name shared-task "shared task" \
+  > "${tmpdir}/agent-worktree-shared-b.out" 2>&1 && {
+    cat "${tmpdir}/agent-worktree-shared-b.out" >&2
+    exit 1
+  }
+grep -Fq -- "belongs to a different repository" "${tmpdir}/agent-worktree-shared-b.out"
+
+TMUX_LOG="${tmpdir}/tmux-no-worktree.log" AGENT_TEST_PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  PATH="${tmpdir}/bin:${install_prefix}/bin:${PATH}" \
+  "${install_prefix}/bin/agent" --no-worktree --type test --cwd "${git_repo}" "plain git task" \
+  > "${tmpdir}/agent-no-worktree.out"
+
+grep -R -Fq -- "${git_repo}" "${HOME}/.cache/agent-dispatch/ctx"
 
 "${install_prefix}/bin/agent" history | grep -Fq smoke
 

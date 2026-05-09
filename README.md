@@ -116,16 +116,34 @@ Dispatch a task:
 agent "summarize this repo"
 ```
 
-Dispatch with an explicit label:
+Dispatch with an explicit task name. The task name is used consistently for the
+tmux window, status/history, and any Git worktree created for the task:
 
 ```zsh
-agent --label repo-summary "summarize this repo"
+agent --task-name repo-summary "summarize this repo"
 ```
 
 Dispatch from a different working directory:
 
 ```zsh
 agent --cwd ~/projects/my-app "fix the failing tests"
+```
+
+When the working directory is the main worktree of a Git repository,
+`agent-dispatch` creates or reuses a linked Git worktree by default and starts
+the agent there. The worktree name is derived from the task name, for example
+`my-app-auth-refactor`. Linked worktrees start from committed Git state; use
+`--no-worktree` when the agent needs to see uncommitted changes in the current
+checkout.
+
+```zsh
+agent --task-name auth-refactor "implement the auth refactor"
+```
+
+Disable worktree creation for one dispatch:
+
+```zsh
+agent --no-worktree "inspect the current checkout"
 ```
 
 Run the selected agent through Docker Sandbox for one dispatch. The prompt is
@@ -270,6 +288,9 @@ AGENT_NOTIFY_TERMINAL_APP="${AGENT_NOTIFY_TERMINAL_APP:-Terminal}"
 AGENT_NOTIFY_IDLE_SECS="${AGENT_NOTIFY_IDLE_SECS:-30}"
 AGENT_NOTIFY_POLL_SECS="${AGENT_NOTIFY_POLL_SECS:-2}"
 AGENT_NOTIFY_ON_EXIT="${AGENT_NOTIFY_ON_EXIT:-0}"
+
+AGENT_GIT_WORKTREE="${AGENT_GIT_WORKTREE:-1}"
+AGENT_GIT_WORKTREE_PARENT="${AGENT_GIT_WORKTREE_PARENT:-}"
 
 AGENT_TMUX_WINDOW_STYLE="${AGENT_TMUX_WINDOW_STYLE:-bg=colour235}"
 AGENT_TMUX_ACTIVE_WINDOW_STYLE="${AGENT_TMUX_ACTIVE_WINDOW_STYLE:-bg=colour235}"

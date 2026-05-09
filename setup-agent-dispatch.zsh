@@ -224,6 +224,12 @@ AGENT_NOTIFY_IDLE_SECS="${AGENT_NOTIFY_IDLE_SECS:-30}"
 AGENT_NOTIFY_POLL_SECS="${AGENT_NOTIFY_POLL_SECS:-2}"
 AGENT_NOTIFY_ON_EXIT="${AGENT_NOTIFY_ON_EXIT:-0}"
 
+# Git worktrees are enabled by default for dispatches started from the main
+# worktree of a Git repo. Existing worktrees are used as-is. Set to 0 globally,
+# or pass `agent --no-worktree ...`, to run in the requested directory.
+AGENT_GIT_WORKTREE="${AGENT_GIT_WORKTREE:-1}"
+AGENT_GIT_WORKTREE_PARENT="${AGENT_GIT_WORKTREE_PARENT:-}"
+
 # Tmux styles applied to dispatcher-managed agent windows.
 # Set either value to an empty string to disable pane background styling.
 AGENT_TMUX_WINDOW_STYLE="${AGENT_TMUX_WINDOW_STYLE:-bg=colour235}"
@@ -314,6 +320,8 @@ AGENT_NOTIFY_TERMINAL_APP="${AGENT_NOTIFY_TERMINAL_APP:-Terminal}"
 AGENT_NOTIFY_IDLE_SECS="${AGENT_NOTIFY_IDLE_SECS:-30}"
 AGENT_NOTIFY_POLL_SECS="${AGENT_NOTIFY_POLL_SECS:-2}"
 AGENT_NOTIFY_ON_EXIT="${AGENT_NOTIFY_ON_EXIT:-0}"
+AGENT_GIT_WORKTREE="${AGENT_GIT_WORKTREE:-1}"
+AGENT_GIT_WORKTREE_PARENT="${AGENT_GIT_WORKTREE_PARENT:-}"
 AGENT_TMUX_WINDOW_STYLE="${AGENT_TMUX_WINDOW_STYLE:-bg=colour235}"
 AGENT_TMUX_ACTIVE_WINDOW_STYLE="${AGENT_TMUX_ACTIVE_WINDOW_STYLE:-bg=colour235}"
 AGENT_TMUX_STATUS_STYLE="${AGENT_TMUX_STATUS_STYLE:-bg=#2b211d,fg=#f4efe7}"
@@ -335,8 +343,8 @@ typeset -A AGENT_FLAGS
 _usage() {
   cat <<'USAGE'
 usage:
-  agent [--type <type>] [--label <label>] [--cwd <dir>] [--docker|--no-docker] [--agent-flag <flag>] [--no-agent-flags] <task...>
-  agent dispatch [--type <type>] [--label <label>] [--cwd <dir>] [--docker|--no-docker] [--agent-flag <flag>] [--no-agent-flags] <task...>
+  agent [--type <type>] [--task-name <name>] [--label <label>] [--cwd <dir>] [--worktree|--no-worktree] [--docker|--no-docker] [--agent-flag <flag>] [--no-agent-flags] <task...>
+  agent dispatch [--type <type>] [--task-name <name>] [--label <label>] [--cwd <dir>] [--worktree|--no-worktree] [--docker|--no-docker] [--agent-flag <flag>] [--no-agent-flags] <task...>
   agent status
   agent history
   agent attach
@@ -395,6 +403,126 @@ _auto_label() {
   raw="${raw##-}"
   raw="${raw%%-}"
   print -r -- "${raw[1,40]:-agent}"
+}
+
+_sanitize_path_name() {
+  local raw="${1:-agent}"
+  raw="${raw:l}"
+  raw="${raw//[^a-z0-9._-]/-}"
+  raw="${raw##-}"
+  raw="${raw%%-}"
+  print -r -- "${raw[1,80]:-agent}"
+}
+
+_git_worktree_key() {
+  local name="${1}" root="${2}"
+  local repo_name="${root:t}"
+  local safe_name="$(_sanitize_path_name "${name}")"
+  local safe_repo="$(_sanitize_path_name "${repo_name}")"
+  print -r -- "${safe_repo}-${safe_name}"
+}
+
+_git_worktree_path() {
+  local root="${1}" key="${2}"
+  if [[ -n "${AGENT_GIT_WORKTREE_PARENT}" ]]; then
+    print -r -- "${AGENT_GIT_WORKTREE_PARENT:A}/${key}"
+  else
+    print -r -- "${root:h}/${key}"
+  fi
+}
+
+_git_worktree_for_key() {
+  local root="${1}" key="${2}"
+  local record path
+  git -C "${root}" worktree list --porcelain 2>/dev/null \
+    | while IFS= read -r record; do
+        if [[ "${record}" == worktree\ * ]]; then
+          path="${record#worktree }"
+          [[ "${path:t}" == "${key}" ]] && { print -r -- "${path}"; return 0; }
+        fi
+      done
+}
+
+_git_common_dir() {
+  git -C "${1}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null
+}
+
+_git_worktree_same_repo() {
+  local path="${1}" expected_common_dir="${2}" actual_common_dir
+  actual_common_dir="$(_git_common_dir "${path}")" || return 1
+  [[ "${actual_common_dir}" == "${expected_common_dir}" ]]
+}
+
+_git_worktree_final_dir() {
+  local target="${1}" rel_dir="${2}" final_dir="${target}"
+  [[ -n "${rel_dir}" ]] && final_dir="${target}/${rel_dir}"
+  mkdir -p "${final_dir}" || return $?
+  print -r -- "${final_dir}"
+}
+
+_resolve_git_worktree_dir() {
+  local requested_dir="${1}" worktree_name="${2}"
+  local root git_dir common_dir rel_dir key target branch output code
+
+  command -v git >/dev/null 2>&1 || { print -r -- "${requested_dir}"; return 0; }
+  root="$(git -C "${requested_dir}" rev-parse --show-toplevel 2>/dev/null)" || {
+    print -r -- "${requested_dir}"
+    return 0
+  }
+
+  git_dir="$(git -C "${requested_dir}" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  common_dir="$(git -C "${requested_dir}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ -n "${git_dir}" && -n "${common_dir}" && "${git_dir}" != "${common_dir}" ]]; then
+    print -r -- "${requested_dir}"
+    return 0
+  fi
+
+  rel_dir="${requested_dir:A}"
+  rel_dir="${rel_dir#${root:A}}"
+  rel_dir="${rel_dir#/}"
+
+  key="$(_git_worktree_key "${worktree_name}" "${root}")"
+  target="$(_git_worktree_for_key "${root}" "${key}")"
+  if [[ -n "${target}" ]]; then
+    _git_worktree_final_dir "${target}" "${rel_dir}"
+    return 0
+  fi
+
+  target="$(_git_worktree_path "${root}" "${key}")"
+  if [[ -e "${target}" ]]; then
+    if git -C "${target}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      if ! _git_worktree_same_repo "${target}" "${common_dir}"; then
+        print "error: Git worktree path '${target}' belongs to a different repository." >&2
+        return 1
+      fi
+      _git_worktree_final_dir "${target}" "${rel_dir}"
+      return 0
+    fi
+    print "error: Git worktree path '${target}' already exists and is not a worktree." >&2
+    return 1
+  fi
+
+  branch="${key}"
+  mkdir -p "${target:h}"
+  if output="$(git -C "${root}" worktree add -b "${branch}" "${target}" 2>&1)"; then
+    code=0
+  else
+    code=$?
+  fi
+  if (( code != 0 )); then
+    if [[ "${output}" == *"already exists"* ]]; then
+      if output="$(git -C "${root}" worktree add "${target}" "${branch}" 2>&1)"; then
+        code=0
+      else
+        code=$?
+      fi
+    fi
+  fi
+  if (( code != 0 )); then
+    print -r -- "${output}" >&2
+    return "${code}"
+  fi
+  _git_worktree_final_dir "${target}" "${rel_dir}"
 }
 
 _find_window() {
@@ -486,6 +614,7 @@ _cmd_dispatch() {
   local work_dir="${PWD}"
   local use_default_agent_flags=1
   local use_docker=""
+  local use_git_worktree=""
   local -a extra_args runtime_agent_flags
 
   while (( $# )); do
@@ -495,8 +624,8 @@ _cmd_dispatch() {
         agent_type="${2}"
         shift 2
         ;;
-      --label|-l)
-        (( $# >= 2 )) || { print "error: --label requires a value." >&2; return 2; }
+      --task-name|--label|-l)
+        (( $# >= 2 )) || { print "error: ${1} requires a value." >&2; return 2; }
         task_label="${2}"
         shift 2
         ;;
@@ -504,6 +633,14 @@ _cmd_dispatch() {
         (( $# >= 2 )) || { print "error: --cwd requires a value." >&2; return 2; }
         work_dir="${2}"
         shift 2
+        ;;
+      --worktree|--git-worktree)
+        use_git_worktree=1
+        shift
+        ;;
+      --no-worktree|--no-git-worktree)
+        use_git_worktree=0
+        shift
         ;;
       --agent-flag)
         (( $# >= 2 )) || { print "error: --agent-flag requires a value." >&2; return 2; }
@@ -570,6 +707,21 @@ _cmd_dispatch() {
 
   [[ -n "${task_label}" ]] || task_label="$(_auto_label "${extra_args[@]}")"
   local win_name="${agent_type}:${task_label}"
+
+  if [[ -z "${use_git_worktree}" ]]; then
+    use_git_worktree="${AGENT_GIT_WORKTREE:-1}"
+  fi
+  case "${use_git_worktree:l}" in
+    1|true|yes|on) use_git_worktree=1 ;;
+    0|false|no|off|"") use_git_worktree=0 ;;
+    *)
+      print "error: Invalid Git worktree setting '${use_git_worktree}'." >&2
+      return 2
+      ;;
+  esac
+  if [[ "${use_git_worktree}" == "1" ]]; then
+    work_dir="$(_resolve_git_worktree_dir "${work_dir}" "${task_label}")" || return $?
+  fi
 
   mkdir -p "${CACHE_DIR}" "${CTX_DIR}"
 
@@ -799,6 +951,7 @@ _cmd_rerun() {
 
   dispatch_args=( --type "${agent_type}" --label "${task_label}" --cwd "${saved_dir}" )
   [[ "${use_default_flags}" == "1" ]] || dispatch_args+=( --no-agent-flags )
+  dispatch_args+=( --no-worktree )
   [[ "${use_docker}" == "1" ]] && dispatch_args+=( --docker )
   local flag
   for flag in "${restored_flags[@]}"; do
@@ -1281,19 +1434,29 @@ _agent() {
         dispatch)
           _arguments \
             '--type[agent type]:type:($(_agent_types))' \
+            '--task-name[task name used for windows, status, history, and worktrees]:name:' \
             '--label[task label]:label:' \
             '--cwd[working directory]:directory:_directories' \
+            '--worktree[create or reuse a Git worktree for this dispatch]' \
+            '--git-worktree[create or reuse a Git worktree for this dispatch]' \
+            '--no-worktree[run in the requested directory without creating a Git worktree]' \
+            '--no-git-worktree[run in the requested directory without creating a Git worktree]' \
             '--docker[run the selected agent through docker sandbox]' \
             '--no-docker[run the selected agent locally]' \
             '--agent-flag[extra flag passed to the selected agent]:flag:' \
             '--no-agent-flags[do not use configured AGENT_FLAGS for this run]' \
             '*:task argument:_normal'
           ;;
-        --type|-t|--label|-l|--cwd|-C|--docker|--no-docker|--agent-flag|--no-agent-flags)
+        --type|-t|--task-name|--label|-l|--cwd|-C|--worktree|--git-worktree|--no-worktree|--no-git-worktree|--docker|--no-docker|--agent-flag|--no-agent-flags)
           _arguments \
             '--type[agent type]:type:($(_agent_types))' \
+            '--task-name[task name used for windows, status, history, and worktrees]:name:' \
             '--label[task label]:label:' \
             '--cwd[working directory]:directory:_directories' \
+            '--worktree[create or reuse a Git worktree for this dispatch]' \
+            '--git-worktree[create or reuse a Git worktree for this dispatch]' \
+            '--no-worktree[run in the requested directory without creating a Git worktree]' \
+            '--no-git-worktree[run in the requested directory without creating a Git worktree]' \
             '--docker[run the selected agent through docker sandbox]' \
             '--no-docker[run the selected agent locally]' \
             '--agent-flag[extra flag passed to the selected agent]:flag:' \
